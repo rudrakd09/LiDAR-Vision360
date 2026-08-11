@@ -23,15 +23,17 @@ class Point2D(BaseModel):
 
 
 class ObjectClassification(str, Enum):
-    """Geometry-based shape classes produced by Phase 6.
+    """Geometry-based shape classes produced by Phase 6 (see docs/object-classification.md).
 
-    Defined now (as part of the canonical data model) so `DetectedObject.classification` has a
-    concrete, documented type; the classifier that assigns these values is implemented later.
+    `POLE_LIKE` was named `POLE` when this enum was first defined in Phase 0, anticipating a
+    category the classifier hadn't been specified yet; renamed to match Phase 6's explicit spec
+    once it landed. Safe, non-breaking: nothing constructed or matched on the old name (grepped
+    before renaming).
     """
 
     WALL = "wall"
     VEHICLE_LIKE = "vehicle_like"
-    POLE = "pole"
+    POLE_LIKE = "pole_like"
     PERSON_LIKE = "person_like"
     LARGE_OBSTACLE = "large_obstacle"
     UNKNOWN = "unknown"
@@ -57,14 +59,47 @@ class BoundingBox(BaseModel):
     max_y: float
 
 
-class DetectedObject(BaseModel):
-    """A single tracked/detected obstacle, as reported by the perception pipeline.
+class ShapeFeatures(BaseModel):
+    """The geometric features `objects.features.extract_features` computes from one
+    `ObstacleCluster`, used both internally by the rule-based classifier (Phase 6) and exposed on
+    `DetectedObject.shape_features` for explainability/debugging. See
+    docs/object-classification.md "Feature definitions" for what each one means and why it was
+    chosen (or, for features investigated and deliberately not implemented -- convex hull area,
+    perimeter, a dedicated rectangle-fit residual -- why not).
+    """
 
-    Fields populated by Phase 5 (clustering): ``centroid``, ``width``, ``depth``, ``distance``,
-    ``bounding_box``, ``point_count``.
-    Fields populated by Phase 6 (classification): ``classification``, ``confidence``.
-    Fields populated by Phase 7 (tracking): ``track_id``, ``velocity``, ``direction``,
-    ``first_seen``, ``last_seen``.
+    point_count: int = Field(..., ge=1)
+    width: float = Field(..., ge=0.0, description="Bounding-box extent along X (forward), meters.")
+    depth: float = Field(..., ge=0.0, description="Bounding-box extent along Y (lateral), meters.")
+    aspect_ratio: float = Field(..., ge=1.0, description="max(width, depth) / max(min(width, depth), epsilon) -- always >= 1; 1 means square/compact, large means elongated.")
+
+    min_distance: float = Field(..., ge=0.0)
+    max_distance: float = Field(..., ge=0.0)
+    centroid_distance: float = Field(..., ge=0.0)
+
+    min_angle: float = Field(..., ge=0.0, lt=360.0)
+    max_angle: float = Field(..., ge=0.0, lt=360.0)
+    angular_width: float = Field(..., ge=0.0, le=360.0)
+
+    mean_distance: float = Field(..., ge=0.0)
+    distance_variance: float = Field(..., ge=0.0, description="Population variance of member points' polar distance -- radial spread.")
+    spatial_variance: float = Field(..., ge=0.0, description="Mean squared distance of member points from the cluster centroid, in m^2 -- overall 2D spread.")
+    point_density: float = Field(..., ge=0.0, description="point_count per meter of major-axis extent (points / max(width, depth, epsilon)).")
+
+    linearity_score: float = Field(..., ge=0.0, le=1.0, description="1.0 = points fall on a perfect line (PCA/total-least-squares fit); 0.0 = spread equally in all directions.")
+    circularity_score: float = Field(..., ge=0.0, le=1.0, description="1.0 = points fall on a perfect circular arc of consistent radius (algebraic circle fit); 0.0 = poor/degenerate fit.")
+
+
+class DetectedObject(BaseModel):
+    """A single classified/tracked obstacle, as reported by the perception pipeline.
+
+    Fields populated by Phase 5 (clustering) *by way of* Phase 6, which maps an `ObstacleCluster`
+    onto this model rather than clustering populating it directly (see docs/clustering.md and
+    docs/data-model.md): ``centroid``, ``width``, ``depth``, ``distance``, ``bounding_box``,
+    ``point_count``, ``min_distance``, ``angular_width``.
+    Fields populated by Phase 6 (classification): ``classification``, ``confidence``,
+    ``shape_features``, ``classification_reason``.
+    Fields populated by Phase 7 (tracking): ``track_id``, ``velocity``, ``direction``.
     """
 
     object_id: str = Field(..., description="Stable identifier for this object within a track's lifetime.")
@@ -73,10 +108,18 @@ class DetectedObject(BaseModel):
     depth: float = Field(..., ge=0.0, description="Object extent (meters) along its dominant radial axis.")
     distance: float = Field(..., ge=0.0, description="Distance from the vehicle origin to the centroid, in meters.")
     classification: ObjectClassification = Field(default=ObjectClassification.UNKNOWN)
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Classification confidence, 0-1. 0 until Phase 6 runs.")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Classification confidence, 0-1. Not a calibrated statistical probability -- see docs/object-classification.md \"Confidence score\".")
     velocity: Velocity2D | None = Field(default=None, description="Populated once tracking (Phase 7) is implemented.")
     direction: float | None = Field(default=None, description="Heading in degrees, populated by tracking (Phase 7).")
     bounding_box: BoundingBox | None = Field(default=None)
     point_count: int | None = Field(default=None, ge=0, description="Number of raw LiDAR points composing this object.")
     track_id: str | None = Field(default=None, description="Cross-frame track identifier, populated by tracking (Phase 7).")
+
+    # Added in Phase 6 -- additive, Optional, defaulting to None so every object constructed by
+    # earlier code (and Phase 0's own tests) keeps working unchanged.
+    min_distance: float | None = Field(default=None, ge=0.0, description="Nearest member point's polar distance (vs. `distance`, which is the centroid's).")
+    angular_width: float | None = Field(default=None, ge=0.0, le=360.0, description="Shortest arc (degrees) containing the object, 0/360-safe -- see clustering.geometry.circular_angular_extent.")
+    shape_features: ShapeFeatures | None = Field(default=None, description="The full extracted feature set the classifier scored, for debugging/explainability.")
+    classification_reason: list[str] | None = Field(default=None, description="Human-readable bullet points explaining the classification -- see docs/object-classification.md \"Explainability\".")
+
     timestamp: float = Field(..., description="Unix epoch timestamp (seconds, float) this observation refers to.")

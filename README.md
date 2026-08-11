@@ -66,23 +66,27 @@ full rationale, including two justified additions inside `perception/src/` (`com
 
 ## Status
 
-**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete. Phase 3 — Preprocessing: complete. Phase 4 — Coordinate Transformation: complete. Phase 5 — Obstacle Clustering: complete.**
+**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete. Phase 3 — Preprocessing: complete. Phase 4 — Coordinate Transformation: complete. Phase 5 — Obstacle Clustering: complete. Phase 6 — Geometric Object Classification: complete.**
 
 Implemented: repository structure, configuration system, logging, canonical data models
-(`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`,
-`CartesianScan`, `ObstacleCluster`, `ClusteredScan`), the `LiDARDataSource` abstraction, a
-minimal `SimulatedLiDARDataSource`, a full ray-casting 2D 360° LiDAR simulator (`simulator/`)
-with configurable environments, noise, moving obstacles, 10 predefined scenarios, real-time
-pacing, recording/replay, a 2D debug visualizer, and a CLI; a preprocessing pipeline
-(`perception/src/preprocessing/`) with validation, range filtering, a circular local-outlier
-detector, a circular median noise filter, and optional cross-scan temporal smoothing; a
-vectorized (NumPy) polar-to-Cartesian coordinate transformer (`perception/src/coordinates/`);
-and DBSCAN-based obstacle clustering (`perception/src/clustering/`), grouping LiDAR points into
-obstacle-candidate clusters with full geometric properties, free-space filtering, and 0/360°-safe
-angular-extent calculation. **287 automated tests total.**
+(`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ShapeFeatures`, `ScanFrame`,
+`PreprocessedScan`, `CartesianScan`, `ObstacleCluster`, `ClusteredScan`, `ClassifiedScan`), the
+`LiDARDataSource` abstraction, a minimal `SimulatedLiDARDataSource`, a full ray-casting 2D 360°
+LiDAR simulator (`simulator/`) with configurable environments, noise, moving obstacles, 10
+predefined scenarios, real-time pacing, recording/replay, a 2D debug visualizer, and a CLI; a
+preprocessing pipeline (`perception/src/preprocessing/`) with validation, range filtering, a
+circular local-outlier detector, a circular median noise filter, and optional cross-scan temporal
+smoothing; a vectorized (NumPy) polar-to-Cartesian coordinate transformer
+(`perception/src/coordinates/`); DBSCAN-based obstacle clustering (`perception/src/clustering/`),
+grouping LiDAR points into obstacle-candidate clusters with full geometric properties, free-space
+filtering, and 0/360°-safe angular-extent calculation; and a geometry-based obstacle classifier
+(`perception/src/objects/`) that scores each cluster against explainable rules (line/circle
+fitting, size gates) to report `WALL`/`VEHICLE_LIKE`/`POLE_LIKE`/`LARGE_OBSTACLE`/`PERSON_LIKE`/
+`UNKNOWN` with a confidence score and a human-readable reason -- explicitly **not**
+general-purpose object recognition. **358 automated tests total.**
 
-Not yet implemented: shape classification, tracking, occupancy mapping, collision/clearance
-engines, Unity, cloud backend/dashboard, alerts, hardware integration. See
+Not yet implemented: tracking, occupancy mapping, collision/clearance engines, Unity, cloud
+backend/dashboard, alerts, hardware integration. See
 [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) for the full phase list and each package's
 README/`docs/` page for per-subsystem status.
 
@@ -160,6 +164,16 @@ python scripts/visualize_clusters.py --scenario 05_multiple_obstacles --visualiz
 python scripts/benchmark_clustering.py
 ```
 
+Run object classification against a scenario (2D labeled-object plot, explained reasoning, a
+performance benchmark, and an accuracy/precision/recall/F1 evaluation against known scenario
+ground truth):
+
+```bash
+python scripts/visualize_classification.py --scenario 04_vehicle_ahead --visualize --explain
+python scripts/benchmark_classification.py
+python scripts/evaluate_classification.py
+```
+
 `scripts/setup_env.ps1` / `scripts/setup_env.sh` automate all the install steps above (perception
 + simulator, with the `viz` extra).
 
@@ -173,11 +187,12 @@ python scripts/benchmark_clustering.py
 - [docs/preprocessing.md](docs/preprocessing.md) — preprocessing pipeline (Phase 3)
 - [docs/coordinates.md](docs/coordinates.md) — coordinate transformation (Phase 4)
 - [docs/clustering.md](docs/clustering.md) — obstacle clustering (Phase 5)
+- [docs/object-classification.md](docs/object-classification.md) — geometric object classification (Phase 6)
 - [docs/tracking.md](docs/tracking.md), [docs/collision.md](docs/collision.md),
   [docs/unity.md](docs/unity.md), [docs/cloud.md](docs/cloud.md),
   [docs/hardware-integration.md](docs/hardware-integration.md) — status placeholders until
   their phase lands
-- [docs/testing.md](docs/testing.md) — full test suite breakdown (287 tests)
+- [docs/testing.md](docs/testing.md) — full test suite breakdown (358 tests)
 
 ## License
 

@@ -3,10 +3,10 @@
 ## Status
 
 Phase 0 (Foundation), Phase 2 (LiDAR Simulator), Phase 3 (Preprocessing), Phase 4 (Coordinate
-Transformation), and Phase 5 (Obstacle Clustering) tests implemented, **287 tests total**. Full
-coverage across the remaining phases (object detection/classification, tracking, Kalman
-filtering, occupancy grid, collision detection, TTC, clearance, API, data validation) will be
-built out as each phase lands, per **Phase 17**.
+Transformation), Phase 5 (Obstacle Clustering), and Phase 6 (Geometric Object Classification)
+tests implemented, **358 tests total**. Full coverage across the remaining phases (tracking,
+Kalman filtering, occupancy grid, collision detection, TTC, clearance, API, data validation) will
+be built out as each phase lands, per **Phase 17**.
 
 ## Current test suites
 
@@ -15,7 +15,7 @@ independently -- running both `tests/` directories in a single `pytest` invocati
 root currently collides on the shared `tests` package name (both have `tests/__init__.py`), so
 run them as two separate invocations, as below.
 
-### `perception/tests/` (152 tests)
+### `perception/tests/` (213 tests)
 
 - `test_models.py` — validation rules and construction for `LiDARPoint`, `CartesianPoint`,
   `DetectedObject`, `ScanFrame`.
@@ -56,8 +56,22 @@ run them as two separate invocations, as below.
 - `test_clustering_parameters.py` — too-small/too-large `eps` and `min_samples`, and a precise
   synthetic reproduction of the quasi-1D density insight that drove the final default parameters
   (see docs/clustering.md "Parameter selection").
+- `test_objects_shape_fitting.py` — PCA line fit (`linearity_score`) and Kasa circle fit
+  (`circularity_score`) against known geometric shapes: collinear points, symmetric rings,
+  circles at various radii, degenerate (coincident/too-few-point) inputs, and the absolute
+  radius-cap guard against a "flat line masquerading as a huge circle."
+- `test_objects_features.py` — every `ShapeFeatures` field against hand-computable synthetic
+  clusters (basic dimensions, aspect ratio, distance stats, angular passthrough, point density,
+  spatial variance, line-/circle-shaped clusters).
+- `test_objects_classifier.py` — the spec's synthetic Wall/Pole/Vehicle/Large-irregular/Ambiguous
+  test clusters; "never forces a category below the confidence threshold"; explainability
+  (nonempty reason, mentions the classification); `DetectedObject` field mapping including the
+  explicit width/depth axis reconciliation; scan-level classification; determinism.
+- `test_objects_metrics.py` — accuracy/precision/recall/F1/confusion-matrix computation against
+  synthetic label lists: perfect predictions, all-wrong, known hand-computed precision/recall,
+  zero-support classes (no division errors), empty input, mismatched-length input.
 
-### `simulator/tests/` (126 tests)
+### `simulator/tests/` (145 tests)
 
 - `test_geometry.py` — ray/segment and ray/circle intersection math, rectangle corner geometry.
 - `test_obstacles.py` — per-obstacle-type (`WallObstacle`, `PoleObstacle`, `RectangleObstacle`)
@@ -96,6 +110,14 @@ run them as two separate invocations, as below.
   distance measurably shrinking; noisy LiDAR → no false-cluster explosion; missing/outliers →
   bounded fragmentation with a substantial main cluster surviving. Same "lives here" reasoning --
   see docs/clustering.md "Architecture".
+- `test_classification_integration.py` — `perception.objects` chained after preprocessing,
+  coordinates, and clustering, run against all 9 required scenarios: wall/pole/vehicle-ahead
+  classify correctly with reasonable confidence; both narrow-corridor walls classify as `WALL`;
+  the approaching obstacle classifies as `VEHICLE_LIKE` consistently across 5 scans with no
+  crashes; noisy/missing-outlier scans never crash, stay within valid confidence bounds, and
+  never produce a wrong *specific* label (e.g. `POLE_LIKE`) for what is geometrically a wall; the
+  multi-obstacle scenario (fixed-seed, see the test file for why) finds at least one
+  `POLE_LIKE`. Same "lives here" reasoning -- see docs/object-classification.md "Architecture".
 
 ## Running
 
@@ -111,9 +133,10 @@ or, from inside either package directory, simply `pytest` (each has its own `pyp
 - Unit tests live alongside the subsystem they test, e.g. `perception/tests/test_clustering.py`
   for `perception/src/clustering/`.
 - Integration tests that exercise multiple stages together (e.g. simulator → preprocessing →
-  coordinates → clustering, and later → objects) live in whichever package already depends on
-  the other(s), so no package's own test suite gains a dependency it doesn't otherwise need --
-  see `simulator/tests/test_{preprocessing,coordinates,clustering}_integration.py`.
+  coordinates → clustering → objects, and later → tracking) live in whichever package already
+  depends on the other(s), so no package's own test suite gains a dependency it doesn't otherwise
+  need -- see
+  `simulator/tests/test_{preprocessing,coordinates,clustering,classification}_integration.py`.
 - Prefer deterministic seeds for anything using randomness (see `NoiseConfig.seed` /
   `common.config.Settings.lidar_random_seed`) so tests are reproducible. Exact-distance
   assertions should use zero noise (`NoiseConfig()` defaults or a scenario's `noise` override);

@@ -2,10 +2,11 @@
 
 ## Status
 
-Phase 0/1 (Foundation), Phase 3 (Preprocessing), Phase 4 (Coordinate Transformation), and Phase 5
-(Clustering) complete. Models are defined in `perception/src/models/` (pydantic v2). They are
-intentionally over-provisioned with `Optional` fields for capabilities not implemented yet, so
-later phases only populate fields rather than redesign the schema.
+Phase 0/1 (Foundation), Phase 3 (Preprocessing), Phase 4 (Coordinate Transformation), Phase 5
+(Clustering), and Phase 6 (Geometric Classification) complete. Models are defined in
+`perception/src/models/` (pydantic v2). They are intentionally over-provisioned with `Optional`
+fields for capabilities not implemented yet, so later phases only populate fields rather than
+redesign the schema.
 
 ## Coordinate convention
 
@@ -125,33 +126,55 @@ free-space/no-return points -- see clustering.md), `cluster_count`, `noise_count
 `total_points`, `clustered_points`, `noise_percentage`, `average_cluster_size`,
 `largest_cluster_size`, `smallest_cluster_size`.
 
-## `DetectedObject` (`models/objects.py`)
+## `DetectedObject` / `ShapeFeatures` (`models/objects.py`)
 
-A single tracked/detected obstacle.
+A single classified obstacle. Populated by `objects.GeometricClassifier` (Phase 6) from one
+`ObstacleCluster` -- see [object-classification.md](object-classification.md) for the full
+write-up.
 
 | Field | Type | Populated by |
 |---|---|---|
-| `object_id` | `str` | Phase 6 (classification), from an `ObstacleCluster`'s `cluster_id` |
+| `object_id` | `str` | Phase 6, from the source `ObstacleCluster.cluster_id` |
 | `centroid` | `Point2D` | Phase 6, from `ObstacleCluster.centroid_x/_y` |
-| `width`, `depth` | `float` | Phase 6 -- **note the axis convention differs from `ObstacleCluster.width/.depth`, see below; do not copy unchanged** |
+| `width`, `depth` | `float` | Phase 6 -- **explicitly reconciled, not copied unchanged**: `DetectedObject.width` (lateral/Y) = `ObstacleCluster.depth` (Y-extent); `DetectedObject.depth` (radial/X) = `ObstacleCluster.width` (X-extent). See `objects.classifier._to_detected_object`. |
 | `distance` | `float` | Phase 6, from `ObstacleCluster.centroid_distance` |
 | `bounding_box` | `BoundingBox \| None` | Phase 6, from `ObstacleCluster.min_x/max_x/min_y/max_y` |
 | `point_count` | `int \| None` | Phase 6, from `ObstacleCluster.point_count` |
 | `classification` | `ObjectClassification` | Phase 6 (default `UNKNOWN`) |
-| `confidence` | `float` `[0,1]` | Phase 6 (default `0.0`) |
+| `confidence` | `float` `[0,1]` | Phase 6 -- the winning rule's raw score, not a calibrated probability |
+| `min_distance` | `float \| None` | Phase 6, from `ObstacleCluster.min_distance` |
+| `angular_width` | `float \| None` | Phase 6, from `ObstacleCluster.angular_width` |
+| `shape_features` | `ShapeFeatures \| None` | Phase 6 -- the full extracted feature set, for debugging/explainability |
+| `classification_reason` | `list[str] \| None` | Phase 6 -- human-readable explanation |
 | `velocity` | `Velocity2D \| None` | Phase 7 (tracking) |
 | `direction` | `float \| None` | Phase 7 |
 | `track_id` | `str \| None` | Phase 7 |
 | `timestamp` | `float` | always |
 
-`ObjectClassification` values: `wall`, `vehicle_like`, `pole`, `person_like`, `large_obstacle`,
-`unknown`. The classifier (Phase 6) must default to `unknown` when uncertain rather than guess.
+`ObjectClassification` values: `wall`, `vehicle_like`, `pole_like`, `person_like`,
+`large_obstacle`, `unknown`. (`pole_like` was named `pole` when this enum was first defined in
+Phase 0, before Phase 6's classifier existed to specify it; renamed to match, confirmed safe via
+grep -- nothing referenced the old name.) The classifier defaults to `unknown` when uncertain
+rather than guessing.
+
+`ShapeFeatures` (`objects.features.extract_features`'s output, also stored on
+`DetectedObject.shape_features`): `point_count`, `width`, `depth`, `aspect_ratio`,
+`min_distance`/`max_distance`/`centroid_distance`, `min_angle`/`max_angle`/`angular_width`,
+`mean_distance`, `distance_variance`, `spatial_variance`, `point_density`, `linearity_score`,
+`circularity_score`. See object-classification.md "Feature definitions" for what each one means.
 
 This table originally (Phase 0) said these fields would be "populated by Phase 5 (clustering)."
-In practice, Phase 5 -- like Phase 3 and 4 before it -- produces its own dedicated per-stage
-model (`ObstacleCluster`/`ClusteredScan`, see below) rather than populating `DetectedObject`
-directly; `DetectedObject` will be populated *from* an `ObstacleCluster` once Phase 6
-(classification) exists to decide what each cluster is.
+In practice, Phase 5 -- like Phase 3 and 4 before it -- produced its own dedicated per-stage
+model (`ObstacleCluster`/`ClusteredScan`) instead of populating `DetectedObject` directly; Phase 6
+is what actually populates `DetectedObject`, mapping it from an `ObstacleCluster` plus its
+extracted `ShapeFeatures` and classification result.
+
+## `ClassifiedScan` (`models/classification.py`)
+
+Output of `objects.GeometricClassifier.classify()` (Phase 6). `scan_id`/`sequence_number`/
+`source_id`/`timestamp` (passthrough), `objects` (`list[DetectedObject]`, one per retained
+cluster), `noise_points` (passthrough, unchanged, from the source `ClusteredScan` -- noise was
+never a cluster, so there's nothing for this stage to classify), `object_count`, `noise_count`.
 
 ## Supporting types
 

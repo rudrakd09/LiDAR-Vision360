@@ -2,9 +2,9 @@
 
 ## Status
 
-Foundation (Phase 0), Preprocessing (Phase 3), Coordinate Transformation (Phase 4), and Obstacle
-Clustering (Phase 5) implemented. Classification through clearance (Phases 6-10) are not
-implemented yet.
+Foundation (Phase 0), Preprocessing (Phase 3), Coordinate Transformation (Phase 4), Obstacle
+Clustering (Phase 5), and Geometric Object Classification (Phase 6) implemented. Tracking through
+clearance (Phases 7-10) are not implemented yet.
 
 | Stage | Package | Status |
 |---|---|---|
@@ -12,7 +12,7 @@ implemented yet.
 | Preprocessing (validation, range filtering, outlier detection, noise/temporal filtering) | `preprocessing` | ✅ Phase 3 -- see [preprocessing.md](preprocessing.md) |
 | Coordinate transformation (polar → Cartesian) | `coordinates` | ✅ Phase 4 -- see [coordinates.md](coordinates.md) |
 | Obstacle clustering (DBSCAN) | `clustering` | ✅ Phase 5 -- see [clustering.md](clustering.md) |
-| Shape classification | `objects` | ⏳ Phase 6 |
+| Geometric shape classification | `objects` | ✅ Phase 6 -- see [object-classification.md](object-classification.md) |
 | Object tracking (nearest-neighbour, Kalman) | `tracking` | ⏳ Phase 7 |
 | Occupancy grid | `mapping` | ⏳ Phase 8 |
 | Collision-risk / TTC | `collision` | ⏳ Phase 9 |
@@ -38,14 +38,19 @@ LiDARDataSource.read_scan()
         |
     ClusteredScan                    (obstacle candidates; models.clustering.ClusteredScan)
         |
-  (Phase 6) shape classification -- not implemented yet
+  GeometricClassifier.classify()     (perception.objects, Phase 6)
+        |
+    ClassifiedScan                   (labeled objects; models.classification.ClassifiedScan)
+        |
+  (Phase 7) tracking -- not implemented yet
 ```
 
 See [data-model.md](data-model.md) for the full field-level model reference,
 [preprocessing.md](preprocessing.md) for the Phase 3 write-up,
-[coordinates.md](coordinates.md) for the Phase 4 write-up, and
-[clustering.md](clustering.md) for the Phase 5 write-up (DBSCAN, parameter selection, cluster
-representation, noise/free-space handling, 0/360 handling, performance, usage examples).
+[coordinates.md](coordinates.md) for the Phase 4 write-up,
+[clustering.md](clustering.md) for the Phase 5 write-up, and
+[object-classification.md](object-classification.md) for the Phase 6 write-up (features, rule
+scoring, thresholds, confidence, explainability, evaluation metrics, known failure cases).
 
 ## Design principle carried through every stage
 

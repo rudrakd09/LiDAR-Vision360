@@ -3,9 +3,9 @@
 ## Status
 
 Phase 0 (Foundation), Phase 2 (LiDAR Simulator), Phase 3 (Preprocessing), Phase 4 (Coordinate
-Transformation), and Phase 5 (Obstacle Clustering) complete. This document covers the current,
-actually-implemented state plus the target end-state architecture; it will be extended as later
-phases land.
+Transformation), Phase 5 (Obstacle Clustering), and Phase 6 (Geometric Object Classification)
+complete. This document covers the current, actually-implemented state plus the target end-state
+architecture; it will be extended as later phases land.
 
 ## Target end-state pipeline
 
@@ -33,7 +33,7 @@ See [PROJECT_SPECIFICATION.md](../PROJECT_SPECIFICATION.md) for the full phase-b
 reconstruction; Unity renders a 3D digital-twin *representation* of a 2D-LiDAR-derived
 environment. True 3D perception is a future extension.
 
-## Current (Phase 0 + Phase 2 + Phase 3 + Phase 4 + Phase 5) data flow
+## Current (Phase 0 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6) data flow
 
 ```
 simulator.SimulatedLiDARDataSource.read_scan()      (ray-casts an Environment of obstacles)
@@ -52,18 +52,24 @@ CartesianScan { points: [CartesianPoint, ...], quality_statistics }
 clustering.DBSCANClusterer.cluster()                (DBSCAN on (x, y), free-space filtered)
         |
 ClusteredScan { clusters: [ObstacleCluster, ...], noise_points, ... }
+        |
+objects.GeometricClassifier.classify()              (feature extraction + rule-based scoring)
+        |
+ClassifiedScan { objects: [DetectedObject, ...], noise_points, ... }
 ```
 
-Nothing downstream of the clustered scan (shape classification, tracking, mapping, collision,
-clearance, ...) exists yet -- that remains the entire scope through Phase 5.
-`scripts/run_foundation_demo.py` exercises the Phase 0 minimal placeholder end to end;
-`simulator.cli` (`python -m simulator.cli run ...`) exercises the full Phase 2 simulator;
-`scripts/compare_raw_processed.py` and `scripts/benchmark_preprocessing.py` exercise Phase 3;
-`scripts/visualize_cartesian.py` and `scripts/benchmark_coordinates.py` exercise Phase 4;
-`scripts/visualize_clusters.py` and `scripts/benchmark_clustering.py` exercise Phase 5 -- all
-against simulator scenarios. See [docs/simulation.md](simulation.md),
-[docs/preprocessing.md](preprocessing.md), [docs/coordinates.md](coordinates.md), and
-[docs/clustering.md](clustering.md) for the full write-ups.
+Nothing downstream of the classified scan (tracking, mapping, collision, clearance, ...) exists
+yet -- that remains the entire scope through Phase 6. `scripts/run_foundation_demo.py` exercises
+the Phase 0 minimal placeholder end to end; `simulator.cli` (`python -m simulator.cli run ...`)
+exercises the full Phase 2 simulator; `scripts/compare_raw_processed.py` and
+`scripts/benchmark_preprocessing.py` exercise Phase 3; `scripts/visualize_cartesian.py` and
+`scripts/benchmark_coordinates.py` exercise Phase 4; `scripts/visualize_clusters.py` and
+`scripts/benchmark_clustering.py` exercise Phase 5; `scripts/visualize_classification.py`,
+`scripts/benchmark_classification.py`, and `scripts/evaluate_classification.py` exercise Phase 6
+-- all against simulator scenarios. See [docs/simulation.md](simulation.md),
+[docs/preprocessing.md](preprocessing.md), [docs/coordinates.md](coordinates.md),
+[docs/clustering.md](clustering.md), and
+[docs/object-classification.md](object-classification.md) for the full write-ups.
 
 ## Repository layout
 
@@ -80,8 +86,8 @@ The implemented layout follows `PROJECT_SPECIFICATION.md` with two justified add
   to pull `ScanFrame`s from, and building the seam early keeps everything else
   hardware-independent from day one.
 
-`preprocessing`, `coordinates`, and `clustering` are now implemented (Phases 3-5). The remaining
-`perception/src/*` packages (`objects`, `tracking`, `mapping`, `collision`, `clearance`,
+`preprocessing`, `coordinates`, `clustering`, and `objects` are now implemented (Phases 3-6). The
+remaining `perception/src/*` packages (`tracking`, `mapping`, `collision`, `clearance`,
 `pipeline`) still exist as empty, documented placeholders matching the proposed tree exactly;
 each will be filled in during its corresponding phase.
 
@@ -102,7 +108,7 @@ LiDAR-Vision360/
 │   │   ├── preprocessing/   validation/range/outlier/noise filtering  [Phase 3 - done]
 │   │   ├── coordinates/     polar -> Cartesian (vectorized)           [Phase 4 - done]
 │   │   ├── clustering/      DBSCAN obstacle clustering                [Phase 5 - done]
-│   │   ├── objects/         shape classification                     [Phase 6]
+│   │   ├── objects/         geometric shape classification            [Phase 6 - done]
 │   │   ├── tracking/        cross-frame tracking + Kalman filter      [Phase 7]
 │   │   ├── mapping/         occupancy grid                            [Phase 8]
 │   │   ├── collision/       collision-risk / TTC engine               [Phase 9]

@@ -113,6 +113,49 @@ class Settings(BaseSettings):
     # instead) -- see docs/clustering.md "Free-space filtering" for why this is necessary.
     clustering_max_range_margin_m: float = 0.2
 
+    # --- Classification (Phase 6, perception/src/objects/) ---
+    # Geometry-based rule scoring, see docs/object-classification.md "Classification method" and
+    # "Parameter selection" for the full reasoning behind every value below.
+    #
+    # The one threshold that decides "confident category" vs. UNKNOWN: the winning category's
+    # score must clear this to be reported; otherwise the object is UNKNOWN (with that best
+    # score still recorded as its confidence, for transparency about how close it came).
+    classification_min_confidence: float = 0.55
+
+    # WALL: visible extent shorter than this isn't confidently a wall (could be a short fragment
+    # or fence-post edge) even if highly linear.
+    classification_wall_min_length_m: float = 1.0
+
+    # WALL: perpendicular thickness (the cluster's *other*, smaller extent) above this isn't
+    # flat enough to be a wall -- rules out boxy/2-faced clusters (e.g. a vehicle seen at an
+    # angle) that can otherwise still show high linearity along their dominant axis.
+    classification_wall_max_thickness_m: float = 0.6
+
+    # POLE_LIKE: extent larger than this is too big to be a thin pole/post, even if the fit is
+    # circular (a curved vehicle panel can locally look circular too -- size gates it out).
+    classification_pole_max_extent_m: float = 0.8
+
+    # VEHICLE_LIKE: approximate size envelope, deliberately a *range* (not the ego vehicle's own
+    # exact dimensions in vehicle_width_m/vehicle_length_m) covering small-car to small-van/truck
+    # silhouettes as seen from one side by a 2D LiDAR.
+    classification_vehicle_width_min_m: float = 1.0
+    classification_vehicle_width_max_m: float = 2.6
+    classification_vehicle_depth_min_m: float = 1.5
+    classification_vehicle_depth_max_m: float = 6.0
+    classification_vehicle_min_points: int = 6
+
+    # PERSON_LIKE: intentionally narrow and conservative -- see docs/object-classification.md
+    # "Person-like classification" for the full caveats. A single 2D LiDAR scan cannot reliably
+    # identify a human; this category exists but is capped well below full confidence.
+    classification_person_extent_min_m: float = 0.15
+    classification_person_extent_max_m: float = 0.9
+    classification_person_max_confidence: float = 0.6
+
+    # LARGE_OBSTACLE: the generic catch-all for "clearly substantial, but not a confident match
+    # for any specific category" -- slightly larger than the wall-length minimum, since this
+    # category is about overall bulk, not linear extent.
+    classification_large_min_extent_m: float = 1.2
+
     # --- Cloud backend (used from Phase 12 onward) ---
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
