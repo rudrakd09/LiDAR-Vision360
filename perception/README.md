@@ -13,7 +13,7 @@ the `datasources.LiDARDataSource` abstraction.
 |---|---|---|
 | `src/models` | Canonical data models (`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, ...) | ✅ Implemented |
 | `src/common` | Configuration (`Settings`) and logging setup | ✅ Implemented |
-| `src/datasources` | `LiDARDataSource` abstraction + `SimulatedLiDARDataSource` (minimal placeholder) + `SerialLiDARDataSource` (stub) | ✅ Implemented (minimal) |
+| `src/datasources` | `LiDARDataSource` abstraction + `SimulatedLiDARDataSource` (minimal placeholder) + `SerialLiDARDataSource` (stub) | ✅ Implemented (minimal). The full-featured simulator now lives in [`../simulator/`](../simulator/) (Phase 2) and implements this same interface. |
 | `src/preprocessing` | Range validation, outlier/noise filtering | ⏳ Phase 3 |
 | `src/coordinates` | Polar → Cartesian conversion | ⏳ Phase 4 |
 | `src/clustering` | DBSCAN-based obstacle clustering | ⏳ Phase 5 |

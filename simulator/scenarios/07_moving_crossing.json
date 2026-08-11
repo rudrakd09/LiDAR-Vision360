@@ -1,0 +1,14 @@
+{
+  "id": "07_moving_crossing",
+  "name": "Moving Obstacle Crossing The Vehicle",
+  "description": "A pole starting ahead-right, moving laterally (+y) at 1.5 m/s, crossing directly in front of the vehicle over several scans.",
+  "obstacles": [
+    {
+      "type": "pole",
+      "center_x": 6.0,
+      "center_y": -6.0,
+      "radius": 0.25,
+      "moving": { "velocity_mps": 1.5, "direction_deg": 90.0 }
+    }
+  ]
+}

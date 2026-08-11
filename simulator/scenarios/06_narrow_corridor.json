@@ -1,0 +1,9 @@
+{
+  "id": "06_narrow_corridor",
+  "name": "Narrow Corridor",
+  "description": "Two parallel walls 2.0m apart (tighter than the default 1.8m vehicle width plus margin), running the length of the environment ahead of the vehicle.",
+  "obstacles": [
+    { "type": "wall", "x1": -2.0, "y1": 1.0, "x2": 15.0, "y2": 1.0 },
+    { "type": "wall", "x1": -2.0, "y1": -1.0, "x2": 15.0, "y2": -1.0 }
+  ]
+}

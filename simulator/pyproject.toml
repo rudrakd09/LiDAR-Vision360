@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lidar-vision360-simulator"
+version = "0.1.0"
+description = "Configurable 2D 360° LiDAR scenario simulator for LiDAR-Vision360 (Phase 2)."
+readme = "README.md"
+requires-python = ">=3.10"
+# Deliberately no formal dependency entry here: the simulator imports perception's `models`,
+# `common`, and `datasources` packages directly (same convention perception's own internal
+# modules use), and expects `perception` to already be installed (editable) in the same
+# environment. See ../README.md "Quickstart" for install order. This avoids depending on a
+# package name that isn't published to an index.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+viz = ["matplotlib>=3.8"]
+
+[project.scripts]
+lidar-simulate = "simulator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+simulator = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

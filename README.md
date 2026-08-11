@@ -51,7 +51,7 @@ Hardware integration → Advanced ML / sensor fusion
 ```
 LiDAR-Vision360/
 ├── perception/       Python perception engine (models, filtering, clustering, tracking, ...)
-├── simulator/        Configurable 360° LiDAR scenario simulator            [Phase 2]
+├── simulator/        Configurable 360° LiDAR scenario simulator            [Phase 2 - done]
 ├── unity/            Unity digital twin                                   [Phase 11]
 ├── cloud/            FastAPI backend + React/TypeScript dashboard          [Phase 12-14]
 ├── embedded/stm32/   STM32 firmware                                       [Phase 16, hardware]
@@ -66,11 +66,13 @@ full rationale, including two justified additions inside `perception/src/` (`com
 
 ## Status
 
-**Phase 0 — Foundation: complete.**
+**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete.**
 
 Implemented: repository structure, configuration system, logging, canonical data models
 (`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`), the `LiDARDataSource`
-abstraction, a minimal `SimulatedLiDARDataSource`, and the base test suite.
+abstraction, a minimal `SimulatedLiDARDataSource`, and a full ray-casting 2D 360° LiDAR simulator
+(`simulator/`) with configurable environments, noise, moving obstacles, 10 predefined scenarios,
+real-time pacing, recording/replay, a 2D debug visualizer, and a CLI. 101 automated tests total.
 
 Not yet implemented: preprocessing, coordinate conversion, clustering, classification, tracking,
 occupancy mapping, collision/clearance engines, Unity, cloud backend/dashboard, alerts, hardware
@@ -94,10 +96,13 @@ Activate the environment:
 source .venv/bin/activate
 ```
 
-Install the perception package (editable, with test dependencies):
+Install the perception package, then the simulator (editable, with test dependencies; the
+simulator depends on perception being installed first):
 
 ```bash
 pip install -e "./perception[dev]"
+pip install -e "./simulator[dev]"        # add the `viz` extra for the 2D debug plot:
+pip install -e "./simulator[dev,viz]"
 ```
 
 Copy the environment template (optional — every setting has a working default):
@@ -106,10 +111,12 @@ Copy the environment template (optional — every setting has a working default)
 cp .env.example .env
 ```
 
-Run the test suite:
+Run the test suites (each subproject's tests run independently — see
+[docs/testing.md](docs/testing.md)):
 
 ```bash
 pytest perception/tests
+pytest simulator/tests
 ```
 
 Run the foundation smoke-test demo:
@@ -118,7 +125,15 @@ Run the foundation smoke-test demo:
 python scripts/run_foundation_demo.py
 ```
 
-`scripts/setup_env.ps1` / `scripts/setup_env.sh` automate the steps above.
+Run the LiDAR simulator:
+
+```bash
+python -m simulator.cli list
+python -m simulator.cli run --scenario 02_wall_in_front --scans 5
+```
+
+`scripts/setup_env.ps1` / `scripts/setup_env.sh` automate all the install steps above (perception
++ simulator, with the `viz` extra).
 
 ## Documentation
 

@@ -1,0 +1,7 @@
+# The simulator depends on the perception package being installed first (editable):
+#   pip install -e "./perception[dev]"
+# It has no additional hard runtime dependencies of its own beyond the Python standard library.
+#
+# Optional: install with the `viz` extra for the 2D debug visualization tool.
+#   pip install -e "./simulator[dev,viz]"
+matplotlib>=3.8  # only required for simulator.visualize / `lidar-simulate ... --visualize`

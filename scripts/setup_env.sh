@@ -6,6 +6,7 @@ set -euo pipefail
 python3 -m venv .venv
 ./.venv/bin/pip install --upgrade pip
 ./.venv/bin/pip install -e "./perception[dev]"
+./.venv/bin/pip install -e "./simulator[dev,viz]"
 
 if [ ! -f .env ]; then
     cp .env.example .env
@@ -17,3 +18,4 @@ echo "Done. Activate the environment with:"
 echo "    source .venv/bin/activate"
 echo "Then run tests with:"
 echo "    pytest perception/tests"
+echo "    pytest simulator/tests"

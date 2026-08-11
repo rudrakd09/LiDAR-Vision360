@@ -1,0 +1,9 @@
+{
+  "id": "09_noisy_lidar",
+  "name": "Noisy LiDAR",
+  "description": "Same wall-in-front geometry as scenario 02, but with elevated Gaussian distance noise and a fixed seed for reproducibility.",
+  "noise": { "distance_noise_std_m": 0.15, "seed": 123 },
+  "obstacles": [
+    { "type": "wall", "x1": 5.0, "y1": -10.0, "x2": 5.0, "y2": 10.0 }
+  ]
+}

@@ -40,9 +40,24 @@ class Settings(BaseSettings):
     lidar_num_points: int = 360
     lidar_scan_frequency_hz: float = 10.0
 
+    # --- LiDAR angular sampling and noise (Phase 2, simulator/) ---
+    # `lidar_num_points` above remains the knob used by the minimal foundation
+    # placeholder (perception.datasources.simulated). The full simulator instead derives its
+    # point count from angular resolution, so resolutions like 0.5deg are expressible directly.
+    lidar_angular_resolution_deg: float = 1.0
+    lidar_distance_noise_std_m: float = 0.02
+    lidar_outlier_probability: float = 0.0
+    lidar_missing_probability: float = 0.0
+    lidar_random_seed: int | None = None
+
     # --- Vehicle / safety parameters (used from Phase 9-10 onward) ---
     vehicle_width_m: float = 1.8
     vehicle_length_m: float = 4.5
+
+    # --- Vehicle-mounted LiDAR pose (Phase 2). Defaults to vehicle center, no rotation. ---
+    lidar_mount_x_m: float = 0.0
+    lidar_mount_y_m: float = 0.0
+    lidar_mount_orientation_deg: float = 0.0
 
     # --- Cloud backend (used from Phase 12 onward) ---
     backend_host: str = "0.0.0.0"

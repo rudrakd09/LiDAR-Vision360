@@ -1,0 +1,6 @@
+{
+  "id": "01_empty",
+  "name": "Empty Environment",
+  "description": "No obstacles anywhere. Every ray should report no return (max range).",
+  "obstacles": []
+}

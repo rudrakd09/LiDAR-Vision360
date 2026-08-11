@@ -1,0 +1,8 @@
+{
+  "id": "03_pole_left",
+  "name": "Pole On The Left",
+  "description": "A thin cylindrical pole 3m directly to the left. The ray at angle=90 should read ~3.0m.",
+  "obstacles": [
+    { "type": "pole", "center_x": 0.0, "center_y": 3.0, "radius": 0.15 }
+  ]
+}

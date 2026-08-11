@@ -1,0 +1,17 @@
+{
+  "id": "08_approaching_obstacle",
+  "name": "Obstacle Approaching The Vehicle",
+  "description": "A vehicle-like rectangle 10m ahead, moving straight toward the vehicle at 2.0 m/s -- useful later for TTC/collision-engine testing.",
+  "obstacles": [
+    {
+      "type": "rectangle",
+      "center_x": 10.0,
+      "center_y": 0.0,
+      "width": 1.8,
+      "depth": 4.5,
+      "rotation_deg": 0.0,
+      "tag": "vehicle_like",
+      "moving": { "velocity_mps": 2.0, "direction_deg": 180.0 }
+    }
+  ]
+}

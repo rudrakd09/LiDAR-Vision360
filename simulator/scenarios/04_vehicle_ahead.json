@@ -1,0 +1,8 @@
+{
+  "id": "04_vehicle_ahead",
+  "name": "Vehicle-Like Obstacle In Front",
+  "description": "A car-sized rectangular obstacle centered 6m ahead. The ray at angle=0 should read ~3.75m (front edge, 6m - depth/2).",
+  "obstacles": [
+    { "type": "rectangle", "center_x": 6.0, "center_y": 0.0, "width": 1.8, "depth": 4.5, "rotation_deg": 0.0, "tag": "vehicle_like" }
+  ]
+}

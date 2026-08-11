@@ -1,0 +1,9 @@
+{
+  "id": "10_missing_outliers",
+  "name": "Missing / Outlier Measurements",
+  "description": "Same wall-in-front geometry as scenario 02, with elevated missing-measurement and outlier probabilities and a fixed seed for reproducibility.",
+  "noise": { "outlier_probability": 0.08, "missing_probability": 0.08, "seed": 7 },
+  "obstacles": [
+    { "type": "wall", "x1": 5.0, "y1": -10.0, "x2": 5.0, "y2": 10.0 }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "02_wall_in_front",
+  "name": "Wall In Front",
+  "description": "A long straight wall 5m directly ahead, perpendicular to the vehicle's forward axis. Rays near angle=0 should read ~5.0m.",
+  "obstacles": [
+    { "type": "wall", "x1": 5.0, "y1": -10.0, "x2": 5.0, "y2": 10.0 }
+  ]
+}
