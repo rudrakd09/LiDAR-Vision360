@@ -7,14 +7,14 @@ the `datasources.LiDARDataSource` abstraction.
 
 ## Status
 
-**Phase 0 / Foundation — implemented.**
+**Phase 0 / Foundation and Phase 3 / Preprocessing — implemented.**
 
 | Package | Purpose | Status |
 |---|---|---|
-| `src/models` | Canonical data models (`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, ...) | ✅ Implemented |
+| `src/models` | Canonical data models (`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`, ...) | ✅ Implemented |
 | `src/common` | Configuration (`Settings`) and logging setup | ✅ Implemented |
 | `src/datasources` | `LiDARDataSource` abstraction + `SimulatedLiDARDataSource` (minimal placeholder) + `SerialLiDARDataSource` (stub) | ✅ Implemented (minimal). The full-featured simulator now lives in [`../simulator/`](../simulator/) (Phase 2) and implements this same interface. |
-| `src/preprocessing` | Range validation, outlier/noise filtering | ⏳ Phase 3 |
+| `src/preprocessing` | Validation, range filtering, outlier detection, noise + optional temporal filtering | ✅ Implemented. See [`../docs/preprocessing.md`](../docs/preprocessing.md). |
 | `src/coordinates` | Polar → Cartesian conversion | ⏳ Phase 4 |
 | `src/clustering` | DBSCAN-based obstacle clustering | ⏳ Phase 5 |
 | `src/objects` | Geometry-based shape classification | ⏳ Phase 6 |
@@ -73,6 +73,20 @@ python scripts/run_foundation_demo.py
 ```
 
 (run from the repository root, with the virtualenv active).
+
+## Preprocessing
+
+```python
+from preprocessing import Preprocessor
+
+preprocessor = Preprocessor()
+clean_scan = preprocessor.process(raw_scan_frame)  # ScanFrame -> PreprocessedScan
+```
+
+See [`../docs/preprocessing.md`](../docs/preprocessing.md) for the full write-up (algorithms,
+configuration, quality metrics, performance, limitations), and
+`scripts/compare_raw_processed.py` / `scripts/benchmark_preprocessing.py` at the repository root
+for debug/benchmark tooling run against simulator scenarios.
 
 ## Coordinate convention
 

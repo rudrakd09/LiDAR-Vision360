@@ -2,9 +2,10 @@
 
 ## Status
 
-Phase 0/1 (Foundation) complete. Models are defined in `perception/src/models/` (pydantic v2).
-They are intentionally over-provisioned with `Optional` fields for capabilities not implemented
-yet, so later phases only populate fields rather than redesign the schema.
+Phase 0/1 (Foundation) and Phase 3 (Preprocessing) complete. Models are defined in
+`perception/src/models/` (pydantic v2). They are intentionally over-provisioned with `Optional`
+fields for capabilities not implemented yet, so later phases only populate fields rather than
+redesign the schema.
 
 ## Coordinate convention
 
@@ -32,7 +33,7 @@ A single raw polar measurement. This is the format every `LiDARDataSource` must 
 | `angle` | `float` | `[0, 360)` degrees |
 | `distance` | `float` | meters, `>= 0` |
 | `timestamp` | `float` | epoch seconds |
-| `valid` | `bool` | default `True`; set `False` by preprocessing (Phase 3) to flag without dropping |
+| `valid` | `bool` | default `True`; `False` means the *data source* already flagged this measurement invalid (e.g. a dropout). Preprocessing (Phase 3) reads this as one validation input; retained points in a `PreprocessedScan` are always `valid=True`. |
 | `intensity` | `float \| None` | optional return-signal intensity |
 
 ## `CartesianPoint` (`models/lidar.py`)
@@ -53,6 +54,30 @@ One complete 360° sweep.
 | `points` | `list[LiDARPoint]` | data source |
 | `cartesian_points` | `list[CartesianPoint] \| None` | Phase 4 (coordinates) |
 | `objects` | `list[DetectedObject] \| None` | Phase 5-6 (clustering/classification) |
+
+## `PreprocessedScan` / `ScanQualityStatistics` (`models/preprocessing.py`)
+
+Output of `preprocessing.Preprocessor.process()` (Phase 3) -- see
+[preprocessing.md](preprocessing.md) for the full pipeline write-up. Reuses `LiDARPoint` for
+retained points rather than a parallel type, since a clean measurement is still just
+`(angle, distance, timestamp)`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `scan_id`, `sequence_number`, `source_id`, `timestamp` | passthrough from the source `ScanFrame` |
+| `points` | `list[LiDARPoint]` | final retained measurements only, angle-sorted, `valid=True` |
+| `total_count` | `int` | measurements in the source scan |
+| `valid_count` | `int` | passed validation (may still include later-removed outliers) |
+| `invalid_count` | `int` | `total_count - valid_count` |
+| `outlier_count` | `int` | of the valid ones, how many were removed as local outliers |
+| `quality_statistics` | `ScanQualityStatistics` | see below |
+
+`len(points) == valid_count - outlier_count`.
+
+`ScanQualityStatistics`: `valid_percentage` / `invalid_percentage` / `outlier_percentage`
+(relative to `total_count`, `0.0` for an empty scan) and `mean_distance` / `median_distance` /
+`minimum_distance` / `maximum_distance` (computed over `points`; `None`, not `0.0`, when there
+are none). Consumed later by sensor-health monitoring and the cloud dashboard (Phases 12/14/24).
 
 ## `DetectedObject` (`models/objects.py`)
 

@@ -21,6 +21,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
 ]
+viz = ["matplotlib>=3.8"]  # only required for preprocessing.visualize (raw-vs-processed debug plot)
 
 # src-layout: each phase's subsystem (models, preprocessing, coordinates, clustering, objects,
 # tracking, mapping, collision, clearance, pipeline, datasources, common) is its own top-level

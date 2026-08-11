@@ -8,6 +8,7 @@ system. See docs/data-model.md for the full write-up and coordinate convention.
 
 from .lidar import CartesianPoint, LiDARPoint
 from .objects import BoundingBox, DetectedObject, ObjectClassification, Point2D, Velocity2D
+from .preprocessing import PreprocessedScan, ScanQualityStatistics
 from .scan import ScanFrame
 
 __all__ = [
@@ -19,4 +20,6 @@ __all__ = [
     "ObjectClassification",
     "DetectedObject",
     "ScanFrame",
+    "PreprocessedScan",
+    "ScanQualityStatistics",
 ]

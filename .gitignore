@@ -77,6 +77,10 @@ docker/**/*.env
 *.log
 logs/
 
+### Recorded LiDAR scan data (simulator.recording / simulator.cli --record output) ###
+*.jsonl
+!simulator/scenarios/*.jsonl
+
 ### IDE / editor ###
 .idea/
 *.iml

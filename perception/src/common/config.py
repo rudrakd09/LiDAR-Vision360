@@ -59,6 +59,27 @@ class Settings(BaseSettings):
     lidar_mount_y_m: float = 0.0
     lidar_mount_orientation_deg: float = 0.0
 
+    # --- Preprocessing (Phase 3, perception/src/preprocessing/) ---
+    # Range validation reuses lidar_range_min_m / lidar_range_max_m above rather than
+    # duplicating them -- there is exactly one configured sensor range in the system.
+    #
+    # Local outlier detector (Hampel-style): a measurement is flagged as an outlier if it
+    # deviates from the median of its `preprocessing_outlier_window_size` angular neighbors
+    # (circular, wraps at 0/360) by more than `preprocessing_outlier_threshold_m`.
+    preprocessing_outlier_threshold_m: float = 0.5
+    preprocessing_outlier_window_size: int = 5
+
+    # Spatial median filter (per-scan, angle-ordered, circular): smooths minor jitter while
+    # remaining edge-preserving. `1` disables it (no-op).
+    preprocessing_median_filter_window: int = 5
+
+    # Optional temporal (cross-scan) exponential smoothing, matched per angle bin:
+    # filtered_t = alpha * current_t + (1 - alpha) * previous_filtered_t.
+    # Disabled by default -- it trades responsiveness (lag on moving obstacles) for smoothness,
+    # so it is opt-in rather than applied unconditionally.
+    preprocessing_temporal_filter_enabled: bool = False
+    preprocessing_temporal_filter_alpha: float = 0.5
+
     # --- Cloud backend (used from Phase 12 onward) ---
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000

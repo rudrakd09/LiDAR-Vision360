@@ -2,9 +2,9 @@
 
 ## Status
 
-Phase 0 (Foundation) and Phase 2 (LiDAR Simulator) complete. This document covers the current,
-actually-implemented state plus the target end-state architecture; it will be extended as later
-phases land.
+Phase 0 (Foundation), Phase 2 (LiDAR Simulator), and Phase 3 (Preprocessing) complete. This
+document covers the current, actually-implemented state plus the target end-state architecture;
+it will be extended as later phases land.
 
 ## Target end-state pipeline
 
@@ -32,20 +32,26 @@ See [PROJECT_SPECIFICATION.md](../PROJECT_SPECIFICATION.md) for the full phase-b
 reconstruction; Unity renders a 3D digital-twin *representation* of a 2D-LiDAR-derived
 environment. True 3D perception is a future extension.
 
-## Current (Phase 0 + Phase 2) data flow
+## Current (Phase 0 + Phase 2 + Phase 3) data flow
 
 ```
 simulator.SimulatedLiDARDataSource.read_scan()      (ray-casts an Environment of obstacles)
     → ScanFrame { points: [LiDARPoint, ...] }
     ↕ (same shape, replayable)
 simulator.RecordedLiDARDataSource.read_scan()        (replays a recorded .jsonl file)
+        |
+preprocessing.Preprocessor.process()                (validation, outliers, noise/temporal filter)
+        |
+PreprocessedScan { points: [LiDARPoint, ...], quality_statistics, ... }
 ```
 
-Nothing downstream of the raw scan (filtering, coordinate conversion, clustering, ...) exists yet
--- that remains the entire scope through Phase 2. `scripts/run_foundation_demo.py` exercises the
-Phase 0 minimal placeholder end to end; `simulator.cli` (`python -m simulator.cli run ...`)
-exercises the full Phase 2 simulator. See [docs/simulation.md](simulation.md) for the full
-write-up.
+Nothing downstream of the clean scan (coordinate conversion, clustering, ...) exists yet -- that
+remains the entire scope through Phase 3. `scripts/run_foundation_demo.py` exercises the Phase 0
+minimal placeholder end to end; `simulator.cli` (`python -m simulator.cli run ...`) exercises the
+full Phase 2 simulator; `scripts/compare_raw_processed.py` and
+`scripts/benchmark_preprocessing.py` exercise Phase 3 preprocessing against simulator scenarios.
+See [docs/simulation.md](simulation.md) and [docs/preprocessing.md](preprocessing.md) for the
+full write-ups.
 
 ## Repository layout
 
@@ -81,7 +87,7 @@ LiDAR-Vision360/
 │   │   ├── models/          canonical data models                    [Phase 0 - done]
 │   │   ├── common/          config + logging (justified addition)    [Phase 0 - done]
 │   │   ├── datasources/     LiDARDataSource abstraction               [Phase 0 - minimal impl]
-│   │   ├── preprocessing/   range/outlier/noise filtering             [Phase 3]
+│   │   ├── preprocessing/   validation/range/outlier/noise filtering  [Phase 3 - done]
 │   │   ├── coordinates/     polar -> Cartesian                        [Phase 4]
 │   │   ├── clustering/      DBSCAN obstacle clustering                [Phase 5]
 │   │   ├── objects/         shape classification                     [Phase 6]
@@ -115,6 +121,15 @@ same way `perception`'s own internal modules cross-import each other -- and impl
 `ScanFrame`/`LiDARPoint` shape `perception/src/models` defines. This keeps the dependency
 one-directional (`simulator` → `perception`, never the reverse), so the perception pipeline never
 needs to know a simulator exists.
+
+## Cross-package integration tests
+
+A package's own test suite never depends on a package that depends on *it*. `perception`
+(including `preprocessing`) has no dependency on `simulator`, so `perception/tests/` never
+imports `simulator` either -- even for integration testing. Where a phase's spec explicitly asks
+for integration tests against simulator scenarios (Phase 3's preprocessing, and future phases the
+same way), those tests live in `simulator/tests/` instead, since `simulator` already depends on
+`perception`. This keeps the dependency graph one-directional in both code and tests.
 
 ## Configuration
 

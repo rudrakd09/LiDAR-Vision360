@@ -66,16 +66,20 @@ full rationale, including two justified additions inside `perception/src/` (`com
 
 ## Status
 
-**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete.**
+**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete. Phase 3 — Preprocessing: complete.**
 
 Implemented: repository structure, configuration system, logging, canonical data models
-(`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`), the `LiDARDataSource`
-abstraction, a minimal `SimulatedLiDARDataSource`, and a full ray-casting 2D 360° LiDAR simulator
-(`simulator/`) with configurable environments, noise, moving obstacles, 10 predefined scenarios,
-real-time pacing, recording/replay, a 2D debug visualizer, and a CLI. 101 automated tests total.
+(`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`), the
+`LiDARDataSource` abstraction, a minimal `SimulatedLiDARDataSource`, a full ray-casting 2D 360°
+LiDAR simulator (`simulator/`) with configurable environments, noise, moving obstacles, 10
+predefined scenarios, real-time pacing, recording/replay, a 2D debug visualizer, and a CLI; and a
+preprocessing pipeline (`perception/src/preprocessing/`) with validation, range filtering, a
+circular local-outlier detector, a circular median noise filter, and optional cross-scan temporal
+smoothing, plus scan-quality statistics for future health monitoring. **180 automated tests
+total.**
 
-Not yet implemented: preprocessing, coordinate conversion, clustering, classification, tracking,
-occupancy mapping, collision/clearance engines, Unity, cloud backend/dashboard, alerts, hardware
+Not yet implemented: coordinate conversion, clustering, classification, tracking, occupancy
+mapping, collision/clearance engines, Unity, cloud backend/dashboard, alerts, hardware
 integration. See [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) for the full phase list and
 each package's README/`docs/` page for per-subsystem status.
 
@@ -132,6 +136,13 @@ python -m simulator.cli list
 python -m simulator.cli run --scenario 02_wall_in_front --scans 5
 ```
 
+Run preprocessing against a scenario (raw vs. processed comparison, and a performance benchmark):
+
+```bash
+python scripts/compare_raw_processed.py --scenario 10_missing_outliers --scans 3
+python scripts/benchmark_preprocessing.py
+```
+
 `scripts/setup_env.ps1` / `scripts/setup_env.sh` automate all the install steps above (perception
 + simulator, with the `viz` extra).
 
@@ -140,13 +151,15 @@ python -m simulator.cli run --scenario 02_wall_in_front --scans 5
 - [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) — full canonical specification
 - [docs/architecture.md](docs/architecture.md) — system architecture and repo layout rationale
 - [docs/data-model.md](docs/data-model.md) — canonical data models and coordinate convention
-- [docs/perception.md](docs/perception.md), [docs/simulation.md](docs/simulation.md),
-  [docs/clustering.md](docs/clustering.md), [docs/tracking.md](docs/tracking.md),
+- [docs/perception.md](docs/perception.md) — perception pipeline status and stage-by-stage map
+- [docs/simulation.md](docs/simulation.md) — LiDAR simulator (Phase 2)
+- [docs/preprocessing.md](docs/preprocessing.md) — preprocessing pipeline (Phase 3)
+- [docs/clustering.md](docs/clustering.md), [docs/tracking.md](docs/tracking.md),
   [docs/collision.md](docs/collision.md), [docs/unity.md](docs/unity.md),
   [docs/cloud.md](docs/cloud.md),
-  [docs/hardware-integration.md](docs/hardware-integration.md),
-  [docs/testing.md](docs/testing.md) — per-subsystem docs (mostly status placeholders until
-  their phase lands)
+  [docs/hardware-integration.md](docs/hardware-integration.md) — status placeholders until
+  their phase lands
+- [docs/testing.md](docs/testing.md) — full test suite breakdown (180 tests)
 
 ## License
 

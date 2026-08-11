@@ -2,10 +2,11 @@
 
 ## Status
 
-Phase 0 (Foundation) and Phase 2 (LiDAR Simulator) tests implemented, 101 tests total. Full
-coverage across the remaining phases (coordinate conversion, filtering, clustering, object
-detection, classification, tracking, Kalman filtering, occupancy grid, collision detection, TTC,
-clearance, API, data validation) will be built out as each phase lands, per **Phase 17**.
+Phase 0 (Foundation), Phase 2 (LiDAR Simulator), and Phase 3 (Preprocessing) tests implemented,
+**180 tests total**. Full coverage across the remaining phases (coordinate conversion,
+clustering, object detection, classification, tracking, Kalman filtering, occupancy grid,
+collision detection, TTC, clearance, API, data validation) will be built out as each phase lands,
+per **Phase 17**.
 
 ## Current test suites
 
@@ -14,7 +15,7 @@ independently -- running both `tests/` directories in a single `pytest` invocati
 root currently collides on the shared `tests` package name (both have `tests/__init__.py`), so
 run them as two separate invocations, as below.
 
-### `perception/tests/` (24 tests)
+### `perception/tests/` (87 tests)
 
 - `test_models.py` — validation rules and construction for `LiDARPoint`, `CartesianPoint`,
   `DetectedObject`, `ScanFrame`.
@@ -22,8 +23,25 @@ run them as two separate invocations, as below.
 - `test_datasources.py` — `LiDARDataSource` interface conformance, `SimulatedLiDARDataSource`
   scan generation (point count, angle/distance validity, sequence numbering, context-manager and
   streaming behavior), `SerialLiDARDataSource` stub raising `NotImplementedError` as expected.
+- `test_preprocessing_windowing.py` — explicit 0/360 circular-boundary behavior of the shared
+  windowing helper used by both outlier detection and the median filter.
+- `test_preprocessing_validation.py` — per-reason validation classification (sensor-flagged,
+  non-finite angle/distance, below/above range), including NaN/inf edge cases via
+  `LiDARPoint.model_construct()`, and scan-level splitting (empty/completely-invalid/mixed).
+- `test_preprocessing_outliers.py` — the spec's isolated-spike and legitimate-boundary examples,
+  multiple isolated outliers, the documented narrow-feature limitation, 0/360 boundary cases,
+  and window/threshold configuration effects.
+- `test_preprocessing_denoise.py` — spec's noise-reduction example, edge preservation across a
+  sharp step, window configuration, empty/degenerate scans.
+- `test_preprocessing_temporal.py` — exact exponential-formula matching, per-angle isolation,
+  reset behavior, and a numerically-verified steady-state lag bound for a constant-velocity ramp
+  (with higher `alpha` shown to reduce that lag).
+- `test_preprocessing_pipeline.py` — end-to-end `PreprocessedScan` structure, count/statistics
+  consistency, angle-sort/preservation, determinism, and error handling (empty, completely
+  invalid, partially invalid, malformed/NaN point, duplicate angles, sparse/missing angles,
+  unusually small/large point counts).
 
-### `simulator/tests/` (77 tests)
+### `simulator/tests/` (93 tests)
 
 - `test_geometry.py` — ray/segment and ray/circle intersection math, rectangle corner geometry.
 - `test_obstacles.py` — per-obstacle-type (`WallObstacle`, `PoleObstacle`, `RectangleObstacle`)
@@ -38,6 +56,13 @@ run them as two separate invocations, as below.
   reproduction of a seeded scenario; the missing/outlier scenario actually produces invalid points.
 - `test_recording.py` — save/load/iterate `.jsonl` recordings, replay in original order, loop
   behavior, pre-connect error handling.
+- `test_preprocessing_integration.py` — `perception.preprocessing` run against 7 required
+  simulator scenarios: all preprocess without error; low-noise scans barely change point count;
+  wall/vehicle-edge distances are preserved (not blurred); noise and outlier variance are
+  measurably reduced within the wall's hit-cone; missing/outlier counts are accounted for;
+  moving-obstacle scans show no added lag (temporal filtering off by default). Lives here rather
+  than in `perception/tests/` since `perception.preprocessing` itself must stay
+  simulator-independent -- see docs/preprocessing.md "Architecture".
 
 ## Running
 
@@ -52,8 +77,10 @@ or, from inside either package directory, simply `pytest` (each has its own `pyp
 
 - Unit tests live alongside the subsystem they test, e.g. `perception/tests/test_clustering.py`
   for `perception/src/clustering/`.
-- Integration tests that exercise multiple stages together (e.g. simulator → preprocessing →
-  clustering → objects) will be added once there are at least two stages to connect.
+- Integration tests that exercise multiple stages together (e.g. simulator → preprocessing, and
+  later → clustering → objects) live in whichever package already depends on the other(s), so no
+  package's own test suite gains a dependency it doesn't otherwise need -- see
+  `simulator/tests/test_preprocessing_integration.py` for the current example.
 - Prefer deterministic seeds for anything using randomness (see `NoiseConfig.seed` /
   `common.config.Settings.lidar_random_seed`) so tests are reproducible. Exact-distance
   assertions should use zero noise (`NoiseConfig()` defaults or a scenario's `noise` override);
