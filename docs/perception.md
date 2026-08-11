@@ -2,14 +2,14 @@
 
 ## Status
 
-Foundation (Phase 0) and Preprocessing (Phase 3) implemented. Coordinates through clearance
-(Phases 4-10) are not implemented yet.
+Foundation (Phase 0), Preprocessing (Phase 3), and Coordinate Transformation (Phase 4)
+implemented. Clustering through clearance (Phases 5-10) are not implemented yet.
 
 | Stage | Package | Status |
 |---|---|---|
 | Data models, config, logging, `LiDARDataSource` | `models`, `common`, `datasources` | ✅ Phase 0 |
 | Preprocessing (validation, range filtering, outlier detection, noise/temporal filtering) | `preprocessing` | ✅ Phase 3 -- see [preprocessing.md](preprocessing.md) |
-| Coordinate transformation (polar → Cartesian) | `coordinates` | ⏳ Phase 4 |
+| Coordinate transformation (polar → Cartesian) | `coordinates` | ✅ Phase 4 -- see [coordinates.md](coordinates.md) |
 | Obstacle clustering (DBSCAN) | `clustering` | ⏳ Phase 5 |
 | Shape classification | `objects` | ⏳ Phase 6 |
 | Object tracking (nearest-neighbour, Kalman) | `tracking` | ⏳ Phase 7 |
@@ -29,14 +29,17 @@ LiDARDataSource.read_scan()
         |
    PreprocessedScan                  (clean; models.preprocessing.PreprocessedScan)
         |
-  (Phase 4) coordinate transformer -- not implemented yet
+  CoordinateTransformer.transform()  (perception.coordinates, Phase 4)
+        |
+    CartesianScan                    (x/y; models.coordinates.CartesianScan)
         |
   (Phase 5) clustering -- not implemented yet
 ```
 
-See [data-model.md](data-model.md) for the full field-level model reference and
-[preprocessing.md](preprocessing.md) for the Phase 3 write-up (algorithms, configuration,
-quality metrics, performance, limitations, usage examples).
+See [data-model.md](data-model.md) for the full field-level model reference,
+[preprocessing.md](preprocessing.md) for the Phase 3 write-up, and
+[coordinates.md](coordinates.md) for the Phase 4 write-up (coordinate convention, equations,
+angle handling, invalid-data behavior, performance, usage examples).
 
 ## Design principle carried through every stage
 

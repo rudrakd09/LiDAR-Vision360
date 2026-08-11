@@ -2,9 +2,9 @@
 
 ## Status
 
-Phase 0 (Foundation), Phase 2 (LiDAR Simulator), and Phase 3 (Preprocessing) complete. This
-document covers the current, actually-implemented state plus the target end-state architecture;
-it will be extended as later phases land.
+Phase 0 (Foundation), Phase 2 (LiDAR Simulator), Phase 3 (Preprocessing), and Phase 4
+(Coordinate Transformation) complete. This document covers the current, actually-implemented
+state plus the target end-state architecture; it will be extended as later phases land.
 
 ## Target end-state pipeline
 
@@ -32,7 +32,7 @@ See [PROJECT_SPECIFICATION.md](../PROJECT_SPECIFICATION.md) for the full phase-b
 reconstruction; Unity renders a 3D digital-twin *representation* of a 2D-LiDAR-derived
 environment. True 3D perception is a future extension.
 
-## Current (Phase 0 + Phase 2 + Phase 3) data flow
+## Current (Phase 0 + Phase 2 + Phase 3 + Phase 4) data flow
 
 ```
 simulator.SimulatedLiDARDataSource.read_scan()      (ray-casts an Environment of obstacles)
@@ -43,14 +43,20 @@ simulator.RecordedLiDARDataSource.read_scan()        (replays a recorded .jsonl 
 preprocessing.Preprocessor.process()                (validation, outliers, noise/temporal filter)
         |
 PreprocessedScan { points: [LiDARPoint, ...], quality_statistics, ... }
+        |
+coordinates.CoordinateTransformer.transform()       (vectorized polar -> Cartesian)
+        |
+CartesianScan { points: [CartesianPoint, ...], quality_statistics }
 ```
 
-Nothing downstream of the clean scan (coordinate conversion, clustering, ...) exists yet -- that
-remains the entire scope through Phase 3. `scripts/run_foundation_demo.py` exercises the Phase 0
-minimal placeholder end to end; `simulator.cli` (`python -m simulator.cli run ...`) exercises the
-full Phase 2 simulator; `scripts/compare_raw_processed.py` and
-`scripts/benchmark_preprocessing.py` exercise Phase 3 preprocessing against simulator scenarios.
-See [docs/simulation.md](simulation.md) and [docs/preprocessing.md](preprocessing.md) for the
+Nothing downstream of the Cartesian scan (clustering, tracking, mapping, collision, clearance,
+...) exists yet -- that remains the entire scope through Phase 4. `scripts/run_foundation_demo.py`
+exercises the Phase 0 minimal placeholder end to end; `simulator.cli`
+(`python -m simulator.cli run ...`) exercises the full Phase 2 simulator;
+`scripts/compare_raw_processed.py` and `scripts/benchmark_preprocessing.py` exercise Phase 3;
+`scripts/visualize_cartesian.py` and `scripts/benchmark_coordinates.py` exercise Phase 4 -- all
+against simulator scenarios. See [docs/simulation.md](simulation.md),
+[docs/preprocessing.md](preprocessing.md), and [docs/coordinates.md](coordinates.md) for the
 full write-ups.
 
 ## Repository layout
@@ -68,10 +74,10 @@ The implemented layout follows `PROJECT_SPECIFICATION.md` with two justified add
   to pull `ScanFrame`s from, and building the seam early keeps everything else
   hardware-independent from day one.
 
-All other `perception/src/*` packages (`preprocessing`, `coordinates`, `clustering`, `objects`,
-`tracking`, `mapping`, `collision`, `clearance`, `pipeline`) exist as empty, documented
-placeholders matching the proposed tree exactly; each will be filled in during its corresponding
-phase.
+`preprocessing` and `coordinates` are now implemented (Phases 3-4). The remaining
+`perception/src/*` packages (`clustering`, `objects`, `tracking`, `mapping`, `collision`,
+`clearance`, `pipeline`) still exist as empty, documented placeholders matching the proposed tree
+exactly; each will be filled in during its corresponding phase.
 
 `simulator/src/` deliberately uses a single cohesive package (`simulator/src/simulator/`) rather
 than `perception`'s flat multi-package style. `perception/src/*` splits into many top-level
@@ -88,7 +94,7 @@ LiDAR-Vision360/
 │   │   ├── common/          config + logging (justified addition)    [Phase 0 - done]
 │   │   ├── datasources/     LiDARDataSource abstraction               [Phase 0 - minimal impl]
 │   │   ├── preprocessing/   validation/range/outlier/noise filtering  [Phase 3 - done]
-│   │   ├── coordinates/     polar -> Cartesian                        [Phase 4]
+│   │   ├── coordinates/     polar -> Cartesian (vectorized)           [Phase 4 - done]
 │   │   ├── clustering/      DBSCAN obstacle clustering                [Phase 5]
 │   │   ├── objects/         shape classification                     [Phase 6]
 │   │   ├── tracking/        cross-frame tracking + Kalman filter      [Phase 7]

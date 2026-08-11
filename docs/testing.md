@@ -2,11 +2,11 @@
 
 ## Status
 
-Phase 0 (Foundation), Phase 2 (LiDAR Simulator), and Phase 3 (Preprocessing) tests implemented,
-**180 tests total**. Full coverage across the remaining phases (coordinate conversion,
-clustering, object detection, classification, tracking, Kalman filtering, occupancy grid,
-collision detection, TTC, clearance, API, data validation) will be built out as each phase lands,
-per **Phase 17**.
+Phase 0 (Foundation), Phase 2 (LiDAR Simulator), Phase 3 (Preprocessing), and Phase 4
+(Coordinate Transformation) tests implemented, **231 tests total**. Full coverage across the
+remaining phases (clustering, object detection, classification, tracking, Kalman filtering,
+occupancy grid, collision detection, TTC, clearance, API, data validation) will be built out as
+each phase lands, per **Phase 17**.
 
 ## Current test suites
 
@@ -15,7 +15,7 @@ independently -- running both `tests/` directories in a single `pytest` invocati
 root currently collides on the shared `tests` package name (both have `tests/__init__.py`), so
 run them as two separate invocations, as below.
 
-### `perception/tests/` (87 tests)
+### `perception/tests/` (116 tests)
 
 - `test_models.py` — validation rules and construction for `LiDARPoint`, `CartesianPoint`,
   `DetectedObject`, `ScanFrame`.
@@ -40,8 +40,14 @@ run them as two separate invocations, as below.
   consistency, angle-sort/preservation, determinism, and error handling (empty, completely
   invalid, partially invalid, malformed/NaN point, duplicate angles, sparse/missing angles,
   unusually small/large point counts).
+- `test_coordinates_transformer.py` — cardinal-angle worked examples (0/90/180/270/45°), angle
+  handling (negative angles, `360°`, `>360°`, original angle preserved unmodified), multiple
+  points and ordering/correspondence preservation, empty/zero/near-zero/large-distance scans,
+  invalid-measurement defense-in-depth (NaN, infinite, out-of-range angle via
+  `LiDARPoint.model_construct()`), quality-statistics passthrough, determinism, and numerical
+  accuracy against hand-computed trig plus a Pythagorean-identity check across 60 angles.
 
-### `simulator/tests/` (93 tests)
+### `simulator/tests/` (115 tests)
 
 - `test_geometry.py` — ray/segment and ray/circle intersection math, rectangle corner geometry.
 - `test_obstacles.py` — per-obstacle-type (`WallObstacle`, `PoleObstacle`, `RectangleObstacle`)
@@ -63,6 +69,15 @@ run them as two separate invocations, as below.
   moving-obstacle scans show no added lag (temporal filtering off by default). Lives here rather
   than in `perception/tests/` since `perception.preprocessing` itself must stay
   simulator-independent -- see docs/preprocessing.md "Architecture".
+- `test_coordinates_integration.py` — `perception.coordinates` chained after
+  `perception.preprocessing`, run against 7 required simulator scenarios: all transform without
+  error; Euclidean `sqrt(x^2+y^2)` reconstructs the original `distance` everywhere; the empty
+  scenario's points sit on the max-range circle; the wall/vehicle-ahead scenarios' points sit at
+  the expected `(x, y)`; the multi-obstacle scenario has points near each expected obstacle
+  region; the narrow corridor's left/right walls sit at `y ≈ ±1.0`; moving-obstacle scenarios'
+  nearest point stays geometrically consistent scan to scan, with the approaching obstacle's
+  nearest-point `x` measurably decreasing over scans. Same "lives here, not in
+  `perception/tests/`" reasoning as above -- see docs/coordinates.md "Architecture".
 
 ## Running
 

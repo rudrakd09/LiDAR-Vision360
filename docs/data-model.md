@@ -2,17 +2,18 @@
 
 ## Status
 
-Phase 0/1 (Foundation) and Phase 3 (Preprocessing) complete. Models are defined in
-`perception/src/models/` (pydantic v2). They are intentionally over-provisioned with `Optional`
-fields for capabilities not implemented yet, so later phases only populate fields rather than
-redesign the schema.
+Phase 0/1 (Foundation), Phase 3 (Preprocessing), and Phase 4 (Coordinate Transformation)
+complete. Models are defined in `perception/src/models/` (pydantic v2). They are intentionally
+over-provisioned with `Optional` fields for capabilities not implemented yet, so later phases
+only populate fields rather than redesign the schema.
 
 ## Coordinate convention
 
 - **angle**: degrees, range `[0, 360)`, measured **counter-clockwise from the vehicle's forward
   axis**.
 - **distance**: meters, `>= 0`. `0` represents "no return" rather than "object at the origin".
-- **Cartesian conversion** (Phase 4 will implement this in `perception/src/coordinates/`):
+- **Cartesian conversion** (implemented by `perception/src/coordinates/`, Phase 4 -- see
+  [coordinates.md](coordinates.md) for the full write-up):
 
   ```
   x = distance * cos(radians(angle))
@@ -20,7 +21,9 @@ redesign the schema.
   ```
 
   `x` is thus the vehicle-forward axis and `y` the vehicle-left axis in a standard
-  right-handed 2D frame, with the vehicle origin at `(0, 0)`.
+  right-handed 2D frame, with the vehicle origin at `(0, 0)`. `0°`=+X, `90°`=+Y, `180°`=-X,
+  `270°`=-Y. This is the same convention `simulator.geometry.ray_direction` already used
+  (confirmed consistent, not changed, when Phase 4 was implemented).
 
 - **timestamp**: Unix epoch seconds, `float`.
 
@@ -38,8 +41,9 @@ A single raw polar measurement. This is the format every `LiDARDataSource` must 
 
 ## `CartesianPoint` (`models/lidar.py`)
 
-Subclasses `LiDARPoint`, adding `x` and `y` (meters). Produced by Phase 4's coordinate
-conversion; retains the original polar fields so nothing downstream needs to re-derive them.
+Subclasses `LiDARPoint`, adding `x` and `y` (meters). Produced by `coordinates.CoordinateTransformer`
+(Phase 4); retains the original polar fields (`angle`, `distance` -- unmodified) so nothing
+downstream needs to re-derive them.
 
 ## `ScanFrame` (`models/scan.py`)
 
@@ -52,8 +56,8 @@ One complete 360° sweep.
 | `source_id` | `str` | data source (e.g. `"simulated"`, future `"stm32-uart"`) |
 | `timestamp` | `float` | data source |
 | `points` | `list[LiDARPoint]` | data source |
-| `cartesian_points` | `list[CartesianPoint] \| None` | Phase 4 (coordinates) |
-| `objects` | `list[DetectedObject] \| None` | Phase 5-6 (clustering/classification) |
+| `cartesian_points` | `list[CartesianPoint] \| None` | Reserved, unused placeholder -- see field/class docstring in `scan.py`. The actual pipeline produces a dedicated `CartesianScan` instead (below). |
+| `objects` | `list[DetectedObject] \| None` | Reserved, unused placeholder, same reasoning. |
 
 ## `PreprocessedScan` / `ScanQualityStatistics` (`models/preprocessing.py`)
 
@@ -71,6 +75,18 @@ retained points rather than a parallel type, since a clean measurement is still 
 | `invalid_count` | `int` | `total_count - valid_count` |
 | `outlier_count` | `int` | of the valid ones, how many were removed as local outliers |
 | `quality_statistics` | `ScanQualityStatistics` | see below |
+
+## `CartesianScan` (`models/coordinates.py`)
+
+Output of `coordinates.CoordinateTransformer.transform()` (Phase 4) -- see
+[coordinates.md](coordinates.md) for the full pipeline write-up. Reuses `CartesianPoint` for
+points rather than a parallel type.
+
+| Field | Type | Notes |
+|---|---|---|
+| `scan_id`, `sequence_number`, `source_id`, `timestamp` | passthrough from the source `PreprocessedScan` |
+| `points` | `list[CartesianPoint]` | same order and (minus any defensively-dropped points) count as the input; `angle`/`distance` unmodified, `x`/`y` newly computed |
+| `quality_statistics` | `ScanQualityStatistics \| None` | carried through unchanged from the source `PreprocessedScan` |
 
 `len(points) == valid_count - outlier_count`.
 

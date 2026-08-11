@@ -7,15 +7,15 @@ the `datasources.LiDARDataSource` abstraction.
 
 ## Status
 
-**Phase 0 / Foundation and Phase 3 / Preprocessing — implemented.**
+**Phase 0 / Foundation, Phase 3 / Preprocessing, and Phase 4 / Coordinate Transformation — implemented.**
 
 | Package | Purpose | Status |
 |---|---|---|
-| `src/models` | Canonical data models (`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`, ...) | ✅ Implemented |
+| `src/models` | Canonical data models (`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`, `CartesianScan`, ...) | ✅ Implemented |
 | `src/common` | Configuration (`Settings`) and logging setup | ✅ Implemented |
 | `src/datasources` | `LiDARDataSource` abstraction + `SimulatedLiDARDataSource` (minimal placeholder) + `SerialLiDARDataSource` (stub) | ✅ Implemented (minimal). The full-featured simulator now lives in [`../simulator/`](../simulator/) (Phase 2) and implements this same interface. |
 | `src/preprocessing` | Validation, range filtering, outlier detection, noise + optional temporal filtering | ✅ Implemented. See [`../docs/preprocessing.md`](../docs/preprocessing.md). |
-| `src/coordinates` | Polar → Cartesian conversion | ⏳ Phase 4 |
+| `src/coordinates` | Polar → Cartesian conversion (vectorized) | ✅ Implemented. See [`../docs/coordinates.md`](../docs/coordinates.md). |
 | `src/clustering` | DBSCAN-based obstacle clustering | ⏳ Phase 5 |
 | `src/objects` | Geometry-based shape classification | ⏳ Phase 6 |
 | `src/tracking` | Cross-frame association + Kalman filtering | ⏳ Phase 7 |
@@ -88,12 +88,20 @@ configuration, quality metrics, performance, limitations), and
 `scripts/compare_raw_processed.py` / `scripts/benchmark_preprocessing.py` at the repository root
 for debug/benchmark tooling run against simulator scenarios.
 
-## Coordinate convention
+## Coordinate transformation
 
-`angle` is in degrees, `[0, 360)`, measured counter-clockwise from the vehicle's forward axis.
-`distance` is in meters. Full polar → Cartesian conversion details will be documented in
-`docs/data-model.md` and `docs/coordinates.md`-equivalent content once Phase 4 lands (see
-`docs/simulation.md`/`docs/perception.md` placeholders in the meantime).
+```python
+from coordinates import CoordinateTransformer
+
+transformer = CoordinateTransformer()
+cartesian_scan = transformer.transform(clean_scan)  # PreprocessedScan -> CartesianScan
+```
+
+`angle` is in degrees, `[0, 360)`, measured counter-clockwise from the vehicle's forward axis
+(`0°`=+X/forward, `90°`=+Y/left, `180°`=-X, `270°`=-Y); `distance` is in meters;
+`x = distance*cos(radians(angle))`, `y = distance*sin(radians(angle))`. See
+[`../docs/coordinates.md`](../docs/coordinates.md) for the full write-up, and
+`scripts/visualize_cartesian.py` / `scripts/benchmark_coordinates.py` for debug/benchmark tooling.
 
 ## Design notes / deviations from the proposed tree
 

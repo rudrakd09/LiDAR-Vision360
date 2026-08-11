@@ -66,22 +66,23 @@ full rationale, including two justified additions inside `perception/src/` (`com
 
 ## Status
 
-**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete. Phase 3 — Preprocessing: complete.**
+**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete. Phase 3 — Preprocessing: complete. Phase 4 — Coordinate Transformation: complete.**
 
 Implemented: repository structure, configuration system, logging, canonical data models
-(`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`), the
-`LiDARDataSource` abstraction, a minimal `SimulatedLiDARDataSource`, a full ray-casting 2D 360°
-LiDAR simulator (`simulator/`) with configurable environments, noise, moving obstacles, 10
-predefined scenarios, real-time pacing, recording/replay, a 2D debug visualizer, and a CLI; and a
-preprocessing pipeline (`perception/src/preprocessing/`) with validation, range filtering, a
-circular local-outlier detector, a circular median noise filter, and optional cross-scan temporal
-smoothing, plus scan-quality statistics for future health monitoring. **180 automated tests
-total.**
+(`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`,
+`CartesianScan`), the `LiDARDataSource` abstraction, a minimal `SimulatedLiDARDataSource`, a full
+ray-casting 2D 360° LiDAR simulator (`simulator/`) with configurable environments, noise, moving
+obstacles, 10 predefined scenarios, real-time pacing, recording/replay, a 2D debug visualizer,
+and a CLI; a preprocessing pipeline (`perception/src/preprocessing/`) with validation, range
+filtering, a circular local-outlier detector, a circular median noise filter, and optional
+cross-scan temporal smoothing, plus scan-quality statistics for future health monitoring; and a
+vectorized (NumPy) polar-to-Cartesian coordinate transformer
+(`perception/src/coordinates/`). **231 automated tests total.**
 
-Not yet implemented: coordinate conversion, clustering, classification, tracking, occupancy
-mapping, collision/clearance engines, Unity, cloud backend/dashboard, alerts, hardware
-integration. See [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) for the full phase list and
-each package's README/`docs/` page for per-subsystem status.
+Not yet implemented: clustering, classification, tracking, occupancy mapping, collision/clearance
+engines, Unity, cloud backend/dashboard, alerts, hardware integration. See
+[PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) for the full phase list and each package's
+README/`docs/` page for per-subsystem status.
 
 ## Quickstart
 
@@ -143,6 +144,13 @@ python scripts/compare_raw_processed.py --scenario 10_missing_outliers --scans 3
 python scripts/benchmark_preprocessing.py
 ```
 
+Run coordinate transformation against a scenario (2D debug plot, and a performance benchmark):
+
+```bash
+python scripts/visualize_cartesian.py --scenario 06_narrow_corridor --visualize
+python scripts/benchmark_coordinates.py
+```
+
 `scripts/setup_env.ps1` / `scripts/setup_env.sh` automate all the install steps above (perception
 + simulator, with the `viz` extra).
 
@@ -154,12 +162,13 @@ python scripts/benchmark_preprocessing.py
 - [docs/perception.md](docs/perception.md) — perception pipeline status and stage-by-stage map
 - [docs/simulation.md](docs/simulation.md) — LiDAR simulator (Phase 2)
 - [docs/preprocessing.md](docs/preprocessing.md) — preprocessing pipeline (Phase 3)
+- [docs/coordinates.md](docs/coordinates.md) — coordinate transformation (Phase 4)
 - [docs/clustering.md](docs/clustering.md), [docs/tracking.md](docs/tracking.md),
   [docs/collision.md](docs/collision.md), [docs/unity.md](docs/unity.md),
   [docs/cloud.md](docs/cloud.md),
   [docs/hardware-integration.md](docs/hardware-integration.md) — status placeholders until
   their phase lands
-- [docs/testing.md](docs/testing.md) — full test suite breakdown (180 tests)
+- [docs/testing.md](docs/testing.md) — full test suite breakdown (231 tests)
 
 ## License
 
