@@ -2,11 +2,11 @@
 
 ## Status
 
-Phase 0 (Foundation), Phase 2 (LiDAR Simulator), Phase 3 (Preprocessing), and Phase 4
-(Coordinate Transformation) tests implemented, **231 tests total**. Full coverage across the
-remaining phases (clustering, object detection, classification, tracking, Kalman filtering,
-occupancy grid, collision detection, TTC, clearance, API, data validation) will be built out as
-each phase lands, per **Phase 17**.
+Phase 0 (Foundation), Phase 2 (LiDAR Simulator), Phase 3 (Preprocessing), Phase 4 (Coordinate
+Transformation), and Phase 5 (Obstacle Clustering) tests implemented, **287 tests total**. Full
+coverage across the remaining phases (object detection/classification, tracking, Kalman
+filtering, occupancy grid, collision detection, TTC, clearance, API, data validation) will be
+built out as each phase lands, per **Phase 17**.
 
 ## Current test suites
 
@@ -15,7 +15,7 @@ independently -- running both `tests/` directories in a single `pytest` invocati
 root currently collides on the shared `tests` package name (both have `tests/__init__.py`), so
 run them as two separate invocations, as below.
 
-### `perception/tests/` (116 tests)
+### `perception/tests/` (152 tests)
 
 - `test_models.py` — validation rules and construction for `LiDARPoint`, `CartesianPoint`,
   `DetectedObject`, `ScanFrame`.
@@ -46,8 +46,18 @@ run them as two separate invocations, as below.
   invalid-measurement defense-in-depth (NaN, infinite, out-of-range angle via
   `LiDARPoint.model_construct()`), quality-statistics passthrough, determinism, and numerical
   accuracy against hand-computed trig plus a Pythagorean-identity check across 60 angles.
+- `test_clustering_geometry.py` — `circular_angular_extent`'s 0/360 boundary handling: the
+  spec's exact wrapping example, non-wrapping/single-angle/empty cases, and the ambiguous
+  antipodal-points edge case.
+- `test_clustering_dbscan.py` — the spec's synthetic Tests A-E (three close points → one
+  cluster, two separated groups → two clusters, an isolated far point → noise not a cluster,
+  points crossing the 0/360 boundary → one cluster, `min_samples` configuration), plus cluster
+  model field correctness, empty/degenerate scans, free-space filtering, and determinism.
+- `test_clustering_parameters.py` — too-small/too-large `eps` and `min_samples`, and a precise
+  synthetic reproduction of the quasi-1D density insight that drove the final default parameters
+  (see docs/clustering.md "Parameter selection").
 
-### `simulator/tests/` (115 tests)
+### `simulator/tests/` (126 tests)
 
 - `test_geometry.py` — ray/segment and ray/circle intersection math, rectangle corner geometry.
 - `test_obstacles.py` — per-obstacle-type (`WallObstacle`, `PoleObstacle`, `RectangleObstacle`)
@@ -78,6 +88,14 @@ run them as two separate invocations, as below.
   nearest point stays geometrically consistent scan to scan, with the approaching obstacle's
   nearest-point `x` measurably decreasing over scans. Same "lives here, not in
   `perception/tests/`" reasoning as above -- see docs/coordinates.md "Architecture".
+- `test_clustering_integration.py` — `perception.clustering` chained after preprocessing and
+  coordinates, run against all 10 scenarios: empty → 0 clusters; wall/pole/vehicle-ahead → 1
+  cluster each; multiple obstacles → several distinct clusters with the two poles staying
+  compact and separate; narrow corridor → exactly 2 clusters at `y ≈ ±1.0`; moving/approaching
+  obstacles → 1 coherent cluster across 5 scans each, with the approaching obstacle's centroid
+  distance measurably shrinking; noisy LiDAR → no false-cluster explosion; missing/outliers →
+  bounded fragmentation with a substantial main cluster surviving. Same "lives here" reasoning --
+  see docs/clustering.md "Architecture".
 
 ## Running
 
@@ -92,10 +110,10 @@ or, from inside either package directory, simply `pytest` (each has its own `pyp
 
 - Unit tests live alongside the subsystem they test, e.g. `perception/tests/test_clustering.py`
   for `perception/src/clustering/`.
-- Integration tests that exercise multiple stages together (e.g. simulator → preprocessing, and
-  later → clustering → objects) live in whichever package already depends on the other(s), so no
-  package's own test suite gains a dependency it doesn't otherwise need -- see
-  `simulator/tests/test_preprocessing_integration.py` for the current example.
+- Integration tests that exercise multiple stages together (e.g. simulator → preprocessing →
+  coordinates → clustering, and later → objects) live in whichever package already depends on
+  the other(s), so no package's own test suite gains a dependency it doesn't otherwise need --
+  see `simulator/tests/test_{preprocessing,coordinates,clustering}_integration.py`.
 - Prefer deterministic seeds for anything using randomness (see `NoiseConfig.seed` /
   `common.config.Settings.lidar_random_seed`) so tests are reproducible. Exact-distance
   assertions should use zero noise (`NoiseConfig()` defaults or a scenario's `noise` override);

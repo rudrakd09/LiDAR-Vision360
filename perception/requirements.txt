@@ -1,11 +1,12 @@
 # Core runtime dependencies for the perception engine.
 # This file is kept in sync with the `dependencies` list in pyproject.toml.
 #
-# Additional libraries (scipy, scikit-learn, opencv-python, fastapi, uvicorn, etc.) will be
-# added in requirements.txt as the phases that need them are implemented (clustering,
-# classification, cloud backend, ...) rather than pre-installed unused here.
+# Additional libraries (scipy, opencv-python, fastapi, uvicorn, etc.) will be added as the
+# phases that need them are implemented (classification, cloud backend, ...) rather than
+# pre-installed unused here.
 
 numpy>=1.26
 pydantic>=2.6
 pydantic-settings>=2.2
 python-dotenv>=1.0
+scikit-learn>=1.3

@@ -80,6 +80,39 @@ class Settings(BaseSettings):
     preprocessing_temporal_filter_enabled: bool = False
     preprocessing_temporal_filter_alpha: float = 0.5
 
+    # --- Clustering (Phase 5, perception/src/clustering/) ---
+    # DBSCAN on (x, y): a point is a core point if >= clustering_min_samples points (including
+    # itself) lie within clustering_eps_m of it; core points within eps of each other join the
+    # same cluster.
+    #
+    # These defaults were reached empirically, not just by theory -- see docs/clustering.md
+    # "Parameter selection" for the full walkthrough. The naive theoretical starting point
+    # (eps=0.3m, min_samples=4, sized to just bridge the ~0.21m worst-case adjacent-point arc
+    # spacing at 12m/1deg resolution) turned out wrong in practice: LiDAR surface points form a
+    # quasi-1D arc, so a point's eps-neighborhood mostly only contains its immediate line
+    # neighbors, not a full 2D neighborhood's worth -- at eps=0.3m a wall point typically has
+    # only 2 neighbors within range, one short of the 3 *other* points min_samples=4 requires,
+    # so entire real walls were incorrectly classified as 100% noise. eps=0.6m / min_samples=3
+    # (validated against all 10 scenarios, including explicit too-small/too-large sweeps on both
+    # parameters) reliably detects a single wall/pole/vehicle as one cluster, keeps the narrow
+    # corridor's two walls (2m apart) and every other genuinely-distinct simulator obstacle
+    # separate, and only starts merging the corridor's walls once eps approaches that 2m gap
+    # directly (observed at eps=2.0m, over 3x this default).
+    clustering_eps_m: float = 0.6
+    clustering_min_samples: int = 3
+
+    # Independent post-filter: a DBSCAN cluster smaller than this is demoted to noise. Every
+    # DBSCAN cluster already has >= clustering_min_samples points by construction, so this is a
+    # no-op at its default (equal to min_samples) -- it only has an effect when raised above
+    # min_samples, for callers who want extra noise robustness without changing DBSCAN's own
+    # density parameter.
+    clustering_min_cluster_points: int = 3
+
+    # Points within this margin of lidar_range_max_m are treated as "no return"/free space, not
+    # obstacle-candidate points, and are excluded from clustering entirely (counted as noise
+    # instead) -- see docs/clustering.md "Free-space filtering" for why this is necessary.
+    clustering_max_range_margin_m: float = 0.2
+
     # --- Cloud backend (used from Phase 12 onward) ---
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000

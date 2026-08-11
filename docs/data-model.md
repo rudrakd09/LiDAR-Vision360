@@ -2,10 +2,10 @@
 
 ## Status
 
-Phase 0/1 (Foundation), Phase 3 (Preprocessing), and Phase 4 (Coordinate Transformation)
-complete. Models are defined in `perception/src/models/` (pydantic v2). They are intentionally
-over-provisioned with `Optional` fields for capabilities not implemented yet, so later phases
-only populate fields rather than redesign the schema.
+Phase 0/1 (Foundation), Phase 3 (Preprocessing), Phase 4 (Coordinate Transformation), and Phase 5
+(Clustering) complete. Models are defined in `perception/src/models/` (pydantic v2). They are
+intentionally over-provisioned with `Optional` fields for capabilities not implemented yet, so
+later phases only populate fields rather than redesign the schema.
 
 ## Coordinate convention
 
@@ -95,18 +95,48 @@ points rather than a parallel type.
 `minimum_distance` / `maximum_distance` (computed over `points`; `None`, not `0.0`, when there
 are none). Consumed later by sensor-health monitoring and the cloud dashboard (Phases 12/14/24).
 
+## `ObstacleCluster` / `ClusteredScan` (`models/clustering.py`)
+
+Output of `clustering.DBSCANClusterer.cluster()` (Phase 5) -- see [clustering.md](clustering.md)
+for the full pipeline write-up. Reuses `CartesianPoint` for member points.
+
+| Field | Type | Notes |
+|---|---|---|
+| `cluster_id` | `int` | Stable within this scan only (`0, 1, 2, ...`); not a persistent cross-scan track ID (Phase 7). |
+| `points` | `list[CartesianPoint]` | Member points, original scan order. |
+| `point_count` | `int` | |
+| `centroid_x`, `centroid_y` | `float` | `mean(x)`, `mean(y)` of member points. |
+| `min_x`, `max_x`, `min_y`, `max_y` | `float` | Axis-aligned bounding box. |
+| `width` | `float` | `max_x - min_x` -- **the vehicle-forward/X extent.** See the axis-convention note below. |
+| `depth` | `float` | `max_y - min_y` -- **the vehicle-lateral/Y extent.** |
+| `min_distance`, `max_distance` | `float` | Extremes of member points' own polar `distance`. |
+| `centroid_distance` | `float` | Distance from the LiDAR origin to `(centroid_x, centroid_y)` -- computed fresh, not a per-point value. |
+| `min_angle`, `max_angle`, `angular_width` | `float` | Shortest arc containing every member angle, circular-boundary-aware -- see `clustering.geometry.circular_angular_extent`. |
+| `timestamp` | `float` | |
+
+**Axis-convention note:** `width`/`depth` here are the *opposite* mapping from
+`DetectedObject.width`/`.depth` (lateral/radial, Phase 0) -- a deliberate, documented
+inconsistency between the two phases' specs. See [clustering.md](clustering.md) "Cluster
+representation" for the full explanation and the Phase 6 recommendation.
+
+`ClusteredScan`: `scan_id`/`sequence_number`/`source_id`/`timestamp` (passthrough), `clusters`,
+`noise_points` (everything not in a cluster: DBSCAN noise, sub-minimum clusters, and
+free-space/no-return points -- see clustering.md), `cluster_count`, `noise_count`,
+`total_points`, `clustered_points`, `noise_percentage`, `average_cluster_size`,
+`largest_cluster_size`, `smallest_cluster_size`.
+
 ## `DetectedObject` (`models/objects.py`)
 
 A single tracked/detected obstacle.
 
 | Field | Type | Populated by |
 |---|---|---|
-| `object_id` | `str` | Phase 5 (clustering) |
-| `centroid` | `Point2D` | Phase 5 |
-| `width`, `depth` | `float` | Phase 5 |
-| `distance` | `float` | Phase 5 |
-| `bounding_box` | `BoundingBox \| None` | Phase 5 |
-| `point_count` | `int \| None` | Phase 5 |
+| `object_id` | `str` | Phase 6 (classification), from an `ObstacleCluster`'s `cluster_id` |
+| `centroid` | `Point2D` | Phase 6, from `ObstacleCluster.centroid_x/_y` |
+| `width`, `depth` | `float` | Phase 6 -- **note the axis convention differs from `ObstacleCluster.width/.depth`, see below; do not copy unchanged** |
+| `distance` | `float` | Phase 6, from `ObstacleCluster.centroid_distance` |
+| `bounding_box` | `BoundingBox \| None` | Phase 6, from `ObstacleCluster.min_x/max_x/min_y/max_y` |
+| `point_count` | `int \| None` | Phase 6, from `ObstacleCluster.point_count` |
 | `classification` | `ObjectClassification` | Phase 6 (default `UNKNOWN`) |
 | `confidence` | `float` `[0,1]` | Phase 6 (default `0.0`) |
 | `velocity` | `Velocity2D \| None` | Phase 7 (tracking) |
@@ -116,6 +146,12 @@ A single tracked/detected obstacle.
 
 `ObjectClassification` values: `wall`, `vehicle_like`, `pole`, `person_like`, `large_obstacle`,
 `unknown`. The classifier (Phase 6) must default to `unknown` when uncertain rather than guess.
+
+This table originally (Phase 0) said these fields would be "populated by Phase 5 (clustering)."
+In practice, Phase 5 -- like Phase 3 and 4 before it -- produces its own dedicated per-stage
+model (`ObstacleCluster`/`ClusteredScan`, see below) rather than populating `DetectedObject`
+directly; `DetectedObject` will be populated *from* an `ObstacleCluster` once Phase 6
+(classification) exists to decide what each cluster is.
 
 ## Supporting types
 

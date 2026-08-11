@@ -7,16 +7,16 @@ the `datasources.LiDARDataSource` abstraction.
 
 ## Status
 
-**Phase 0 / Foundation, Phase 3 / Preprocessing, and Phase 4 / Coordinate Transformation — implemented.**
+**Phase 0 / Foundation, Phase 3 / Preprocessing, Phase 4 / Coordinate Transformation, and Phase 5 / Obstacle Clustering — implemented.**
 
 | Package | Purpose | Status |
 |---|---|---|
-| `src/models` | Canonical data models (`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`, `CartesianScan`, ...) | ✅ Implemented |
+| `src/models` | Canonical data models (`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`, `CartesianScan`, `ObstacleCluster`, `ClusteredScan`, ...) | ✅ Implemented |
 | `src/common` | Configuration (`Settings`) and logging setup | ✅ Implemented |
 | `src/datasources` | `LiDARDataSource` abstraction + `SimulatedLiDARDataSource` (minimal placeholder) + `SerialLiDARDataSource` (stub) | ✅ Implemented (minimal). The full-featured simulator now lives in [`../simulator/`](../simulator/) (Phase 2) and implements this same interface. |
 | `src/preprocessing` | Validation, range filtering, outlier detection, noise + optional temporal filtering | ✅ Implemented. See [`../docs/preprocessing.md`](../docs/preprocessing.md). |
 | `src/coordinates` | Polar → Cartesian conversion (vectorized) | ✅ Implemented. See [`../docs/coordinates.md`](../docs/coordinates.md). |
-| `src/clustering` | DBSCAN-based obstacle clustering | ⏳ Phase 5 |
+| `src/clustering` | DBSCAN-based obstacle clustering | ✅ Implemented. See [`../docs/clustering.md`](../docs/clustering.md). |
 | `src/objects` | Geometry-based shape classification | ⏳ Phase 6 |
 | `src/tracking` | Cross-frame association + Kalman filtering | ⏳ Phase 7 |
 | `src/mapping` | 2D occupancy grid | ⏳ Phase 8 |
@@ -102,6 +102,21 @@ cartesian_scan = transformer.transform(clean_scan)  # PreprocessedScan -> Cartes
 `x = distance*cos(radians(angle))`, `y = distance*sin(radians(angle))`. See
 [`../docs/coordinates.md`](../docs/coordinates.md) for the full write-up, and
 `scripts/visualize_cartesian.py` / `scripts/benchmark_coordinates.py` for debug/benchmark tooling.
+
+## Obstacle clustering
+
+```python
+from clustering import DBSCANClusterer
+
+clusterer = DBSCANClusterer()
+clustered_scan = clusterer.cluster(cartesian_scan)  # CartesianScan -> ClusteredScan
+```
+
+DBSCAN on `(x, y)`, defaults `eps_m=0.6`/`min_samples=3` (empirically validated against every
+simulator scenario, not just theory -- see [`../docs/clustering.md`](../docs/clustering.md)
+"Parameter selection"). Points near `lidar_range_max_m` (free space/no-return) are excluded from
+clustering and counted as noise. See `../docs/clustering.md` for the full write-up, and
+`scripts/visualize_clusters.py` / `scripts/benchmark_clustering.py` for debug/benchmark tooling.
 
 ## Design notes / deviations from the proposed tree
 

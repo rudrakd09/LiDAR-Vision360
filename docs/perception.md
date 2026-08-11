@@ -2,15 +2,16 @@
 
 ## Status
 
-Foundation (Phase 0), Preprocessing (Phase 3), and Coordinate Transformation (Phase 4)
-implemented. Clustering through clearance (Phases 5-10) are not implemented yet.
+Foundation (Phase 0), Preprocessing (Phase 3), Coordinate Transformation (Phase 4), and Obstacle
+Clustering (Phase 5) implemented. Classification through clearance (Phases 6-10) are not
+implemented yet.
 
 | Stage | Package | Status |
 |---|---|---|
 | Data models, config, logging, `LiDARDataSource` | `models`, `common`, `datasources` | ✅ Phase 0 |
 | Preprocessing (validation, range filtering, outlier detection, noise/temporal filtering) | `preprocessing` | ✅ Phase 3 -- see [preprocessing.md](preprocessing.md) |
 | Coordinate transformation (polar → Cartesian) | `coordinates` | ✅ Phase 4 -- see [coordinates.md](coordinates.md) |
-| Obstacle clustering (DBSCAN) | `clustering` | ⏳ Phase 5 |
+| Obstacle clustering (DBSCAN) | `clustering` | ✅ Phase 5 -- see [clustering.md](clustering.md) |
 | Shape classification | `objects` | ⏳ Phase 6 |
 | Object tracking (nearest-neighbour, Kalman) | `tracking` | ⏳ Phase 7 |
 | Occupancy grid | `mapping` | ⏳ Phase 8 |
@@ -33,13 +34,18 @@ LiDARDataSource.read_scan()
         |
     CartesianScan                    (x/y; models.coordinates.CartesianScan)
         |
-  (Phase 5) clustering -- not implemented yet
+  DBSCANClusterer.cluster()          (perception.clustering, Phase 5)
+        |
+    ClusteredScan                    (obstacle candidates; models.clustering.ClusteredScan)
+        |
+  (Phase 6) shape classification -- not implemented yet
 ```
 
 See [data-model.md](data-model.md) for the full field-level model reference,
-[preprocessing.md](preprocessing.md) for the Phase 3 write-up, and
-[coordinates.md](coordinates.md) for the Phase 4 write-up (coordinate convention, equations,
-angle handling, invalid-data behavior, performance, usage examples).
+[preprocessing.md](preprocessing.md) for the Phase 3 write-up,
+[coordinates.md](coordinates.md) for the Phase 4 write-up, and
+[clustering.md](clustering.md) for the Phase 5 write-up (DBSCAN, parameter selection, cluster
+representation, noise/free-space handling, 0/360 handling, performance, usage examples).
 
 ## Design principle carried through every stage
 

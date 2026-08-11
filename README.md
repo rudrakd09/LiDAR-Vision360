@@ -66,20 +66,22 @@ full rationale, including two justified additions inside `perception/src/` (`com
 
 ## Status
 
-**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete. Phase 3 — Preprocessing: complete. Phase 4 — Coordinate Transformation: complete.**
+**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete. Phase 3 — Preprocessing: complete. Phase 4 — Coordinate Transformation: complete. Phase 5 — Obstacle Clustering: complete.**
 
 Implemented: repository structure, configuration system, logging, canonical data models
 (`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ScanFrame`, `PreprocessedScan`,
-`CartesianScan`), the `LiDARDataSource` abstraction, a minimal `SimulatedLiDARDataSource`, a full
-ray-casting 2D 360° LiDAR simulator (`simulator/`) with configurable environments, noise, moving
-obstacles, 10 predefined scenarios, real-time pacing, recording/replay, a 2D debug visualizer,
-and a CLI; a preprocessing pipeline (`perception/src/preprocessing/`) with validation, range
-filtering, a circular local-outlier detector, a circular median noise filter, and optional
-cross-scan temporal smoothing, plus scan-quality statistics for future health monitoring; and a
-vectorized (NumPy) polar-to-Cartesian coordinate transformer
-(`perception/src/coordinates/`). **231 automated tests total.**
+`CartesianScan`, `ObstacleCluster`, `ClusteredScan`), the `LiDARDataSource` abstraction, a
+minimal `SimulatedLiDARDataSource`, a full ray-casting 2D 360° LiDAR simulator (`simulator/`)
+with configurable environments, noise, moving obstacles, 10 predefined scenarios, real-time
+pacing, recording/replay, a 2D debug visualizer, and a CLI; a preprocessing pipeline
+(`perception/src/preprocessing/`) with validation, range filtering, a circular local-outlier
+detector, a circular median noise filter, and optional cross-scan temporal smoothing; a
+vectorized (NumPy) polar-to-Cartesian coordinate transformer (`perception/src/coordinates/`);
+and DBSCAN-based obstacle clustering (`perception/src/clustering/`), grouping LiDAR points into
+obstacle-candidate clusters with full geometric properties, free-space filtering, and 0/360°-safe
+angular-extent calculation. **287 automated tests total.**
 
-Not yet implemented: clustering, classification, tracking, occupancy mapping, collision/clearance
+Not yet implemented: shape classification, tracking, occupancy mapping, collision/clearance
 engines, Unity, cloud backend/dashboard, alerts, hardware integration. See
 [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) for the full phase list and each package's
 README/`docs/` page for per-subsystem status.
@@ -151,6 +153,13 @@ python scripts/visualize_cartesian.py --scenario 06_narrow_corridor --visualize
 python scripts/benchmark_coordinates.py
 ```
 
+Run obstacle clustering against a scenario (2D cluster debug plot, and a performance benchmark):
+
+```bash
+python scripts/visualize_clusters.py --scenario 05_multiple_obstacles --visualize
+python scripts/benchmark_clustering.py
+```
+
 `scripts/setup_env.ps1` / `scripts/setup_env.sh` automate all the install steps above (perception
 + simulator, with the `viz` extra).
 
@@ -163,12 +172,12 @@ python scripts/benchmark_coordinates.py
 - [docs/simulation.md](docs/simulation.md) — LiDAR simulator (Phase 2)
 - [docs/preprocessing.md](docs/preprocessing.md) — preprocessing pipeline (Phase 3)
 - [docs/coordinates.md](docs/coordinates.md) — coordinate transformation (Phase 4)
-- [docs/clustering.md](docs/clustering.md), [docs/tracking.md](docs/tracking.md),
-  [docs/collision.md](docs/collision.md), [docs/unity.md](docs/unity.md),
-  [docs/cloud.md](docs/cloud.md),
+- [docs/clustering.md](docs/clustering.md) — obstacle clustering (Phase 5)
+- [docs/tracking.md](docs/tracking.md), [docs/collision.md](docs/collision.md),
+  [docs/unity.md](docs/unity.md), [docs/cloud.md](docs/cloud.md),
   [docs/hardware-integration.md](docs/hardware-integration.md) — status placeholders until
   their phase lands
-- [docs/testing.md](docs/testing.md) — full test suite breakdown (231 tests)
+- [docs/testing.md](docs/testing.md) — full test suite breakdown (287 tests)
 
 ## License
 
