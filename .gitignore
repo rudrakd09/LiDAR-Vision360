@@ -1,0 +1,89 @@
+### Python ###
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+
+### Environment / secrets ###
+.env
+.env.*
+!.env.example
+*.env.local
+secrets.yaml
+secrets.json
+
+### Node / React dashboard ###
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+coverage/
+*.local
+cloud/dashboard/.vite/
+
+### Unity ###
+unity/LiDARVision360/Library/
+unity/LiDARVision360/Temp/
+unity/LiDARVision360/Obj/
+unity/LiDARVision360/Build/
+unity/LiDARVision360/Builds/
+unity/LiDARVision360/Logs/
+unity/LiDARVision360/MemoryCaptures/
+unity/LiDARVision360/UserSettings/
+unity/LiDARVision360/*.csproj
+unity/LiDARVision360/*.sln
+unity/LiDARVision360/*.suo
+unity/LiDARVision360/.vs/
+unity/LiDARVision360/*.pidb.meta
+unity/LiDARVision360/*.pdb.meta
+unity/LiDARVision360/*.mdb.meta
+unity/LiDARVision360/sysinfo.txt
+unity/LiDARVision360/crashlytics-build.properties
+
+### Embedded / STM32 toolchains ###
+embedded/stm32/**/build/
+embedded/stm32/**/Debug/
+embedded/stm32/**/Release/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+### Database ###
+*.sqlite3
+pgdata/
+docker/pgdata/
+
+### Docker ###
+docker/**/*.env
+
+### Logs ###
+*.log
+logs/
+
+### IDE / editor ###
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+
+### OS ###
+.DS_Store
+Thumbs.db
+desktop.ini
