@@ -7,12 +7,25 @@ system. See docs/data-model.md for the full write-up and coordinate convention.
 """
 
 from .classification import ClassifiedScan
+from .clearance import ClearanceAssessment, ClearanceDirection, ClearanceState, DirectionalClearance
 from .clustering import ClusteredScan, ObstacleCluster
+from .collision import CollisionAssessment, CollisionRiskResult, RiskLevel, VehicleState
 from .coordinates import CartesianScan
 from .lidar import CartesianPoint, LiDARPoint
-from .objects import BoundingBox, DetectedObject, ObjectClassification, Point2D, ShapeFeatures, Velocity2D
+from .mapping import CellState, MapStatistics, OccupancyGrid, VehiclePose
+from .objects import (
+    BoundingBox,
+    DetectedObject,
+    MovementState,
+    ObjectClassification,
+    Point2D,
+    ShapeFeatures,
+    TrackingState,
+    Velocity2D,
+)
 from .preprocessing import PreprocessedScan, ScanQualityStatistics
 from .scan import ScanFrame
+from .tracking import TrackedScan
 
 __all__ = [
     "LiDARPoint",
@@ -21,6 +34,8 @@ __all__ = [
     "BoundingBox",
     "Velocity2D",
     "ObjectClassification",
+    "TrackingState",
+    "MovementState",
     "ShapeFeatures",
     "DetectedObject",
     "ScanFrame",
@@ -30,4 +45,17 @@ __all__ = [
     "ObstacleCluster",
     "ClusteredScan",
     "ClassifiedScan",
+    "TrackedScan",
+    "CellState",
+    "VehiclePose",
+    "MapStatistics",
+    "OccupancyGrid",
+    "RiskLevel",
+    "VehicleState",
+    "CollisionRiskResult",
+    "CollisionAssessment",
+    "ClearanceDirection",
+    "ClearanceState",
+    "DirectionalClearance",
+    "ClearanceAssessment",
 ]

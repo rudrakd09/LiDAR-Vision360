@@ -50,6 +50,27 @@ class Velocity2D(BaseModel):
         return (self.vx ** 2 + self.vy ** 2) ** 0.5
 
 
+class TrackingState(str, Enum):
+    """Lifecycle state of a track, populated by tracking (Phase 7). See docs/tracking.md
+    "Track lifecycle" for the full state machine and the transitions between these four states.
+    """
+
+    TENTATIVE = "tentative"  # just created; not yet seen enough times to be trusted
+    CONFIRMED = "confirmed"  # seen tracking_min_hits_to_confirm+ times; a trusted, stable track
+    COASTING = "coasting"  # missed this scan but within tracking_max_missed_scans/track_timeout_s
+    LOST = "lost"  # exceeded the miss budget; terminal, dropped from the active track set
+
+
+class MovementState(str, Enum):
+    """Coarse motion classification of a track's estimated velocity, populated by tracking
+    (Phase 7) once its velocity is reliable -- see docs/tracking.md "Movement classification".
+    """
+
+    STATIONARY = "stationary"  # speed below tracking_stationary_speed_threshold_mps
+    MOVING = "moving"  # speed at or above the threshold
+    UNKNOWN = "unknown"  # fewer than tracking_min_observations_for_velocity hits so far
+
+
 class BoundingBox(BaseModel):
     """Axis-aligned, vehicle-relative bounding box of a detected object, in meters."""
 
@@ -99,7 +120,9 @@ class DetectedObject(BaseModel):
     ``point_count``, ``min_distance``, ``angular_width``.
     Fields populated by Phase 6 (classification): ``classification``, ``confidence``,
     ``shape_features``, ``classification_reason``.
-    Fields populated by Phase 7 (tracking): ``track_id``, ``velocity``, ``direction``.
+    Fields populated by Phase 7 (tracking): ``track_id``, ``velocity``, ``direction``,
+    ``predicted_position``, ``tracking_state``, ``movement_state``, ``track_age``,
+    ``track_hits``, ``track_misses``.
     """
 
     object_id: str = Field(..., description="Stable identifier for this object within a track's lifetime.")
@@ -121,5 +144,17 @@ class DetectedObject(BaseModel):
     angular_width: float | None = Field(default=None, ge=0.0, le=360.0, description="Shortest arc (degrees) containing the object, 0/360-safe -- see clustering.geometry.circular_angular_extent.")
     shape_features: ShapeFeatures | None = Field(default=None, description="The full extracted feature set the classifier scored, for debugging/explainability.")
     classification_reason: list[str] | None = Field(default=None, description="Human-readable bullet points explaining the classification -- see docs/object-classification.md \"Explainability\".")
+
+    # Added in Phase 7 -- additive, Optional, same pattern as Phase 6's additions above. Per
+    # docs/data-model.md "Extensibility rule": tracking has no genuinely new *object* concept
+    # (a tracked object is still just a DetectedObject with its Phase-7-reserved fields --
+    # `track_id`, `velocity`, `direction`, above -- plus these few new ones -- populated), so no
+    # parallel "TrackedObject" model was introduced; see docs/tracking.md "Track data model".
+    predicted_position: Point2D | None = Field(default=None, description="Kalman filter's one-step-ahead position estimate (next scan's expected centroid), populated by tracking (Phase 7).")
+    tracking_state: TrackingState | None = Field(default=None, description="Track lifecycle state (TENTATIVE/CONFIRMED/COASTING/LOST), populated by tracking (Phase 7).")
+    movement_state: MovementState | None = Field(default=None, description="STATIONARY/MOVING/UNKNOWN, populated by tracking (Phase 7) -- UNKNOWN until tracking_min_observations_for_velocity is reached.")
+    track_age: int | None = Field(default=None, ge=0, description="Number of scans since this track was created (including this one), populated by tracking (Phase 7). Named `track_age` rather than `age` to avoid ambiguity with any future notion of an object's real-world age.")
+    track_hits: int | None = Field(default=None, ge=0, description="Number of scans in which this track was successfully associated with a detection (including this one, if matched), populated by tracking (Phase 7).")
+    track_misses: int | None = Field(default=None, ge=0, description="Current consecutive-miss streak; 0 while actively detected, populated by tracking (Phase 7).")
 
     timestamp: float = Field(..., description="Unix epoch timestamp (seconds, float) this observation refers to.")
