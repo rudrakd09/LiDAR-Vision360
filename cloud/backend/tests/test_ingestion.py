@@ -163,3 +163,78 @@ class TestIngestionAgainstFakeServer:
 
         ingestor.stop()
         server_thread.join(timeout=3)
+
+
+class TestSourceIdFromFrameData:
+    """Regression test for the "Session: no active session" dashboard bug: source_id must come
+    from every PERCEPTION_FRAME's own `data.source_id` (always present), not only from the
+    SYSTEM_STATUS message -- which is published once per bridge *run*, so a client connecting
+    after it already went out (any late-connecting backend, not a hypothetical -- this is exactly
+    what happened) would otherwise never learn the session's source_id despite frames actively
+    flowing."""
+
+    def test_source_id_populated_without_any_system_status_message(self, db, event_loop_for_ingestor):
+        port_holder, ready = [], threading.Event()
+        # Deliberately NO SYSTEM_STATUS message in this payload list -- only PERCEPTION_FRAMEs,
+        # simulating a client that connected after SYSTEM_STATUS already went out.
+        payloads = [_frame_message(1), _frame_message(2), _frame_message(3)]
+        server_thread = threading.Thread(target=_run_fake_server, args=(port_holder, payloads, ready), daemon=True)
+        server_thread.start()
+        ready.wait(timeout=3)
+
+        settings = Settings(_env_file=None, streaming_host="127.0.0.1", streaming_json_port=port_holder[0], streaming_reconnect_interval_s=0.2)
+        state = LatestState(ring_buffer_size=50, track_grace_period_s=2.0)
+        hub = LiveBroadcastHub()
+        ingestor = PerceptionIngestor(settings, state, db, hub, event_loop_for_ingestor)
+        ingestor.start()
+
+        deadline = time.time() + 5
+        while time.time() < deadline and state.connection.frames_received < 3:
+            time.sleep(0.05)
+
+        assert state.connection.source_id == "test"  # from _frame_message's own data.source_id
+
+        ingestor.stop()
+        server_thread.join(timeout=3)
+
+
+class TestIngestionSurvivesBadMessages:
+    """Regression test for the silent-thread-death bug: a message that causes an exception deep
+    in dispatch (e.g. a field with an unexpected type) must be logged and skipped, not kill the
+    background thread -- which would otherwise freeze every value the dashboard shows (connection
+    state stays "connected" forever, but no further frame is ever processed) with no visible
+    indication anything went wrong."""
+
+    def test_one_malformed_frame_does_not_stop_subsequent_good_frames(self, db, event_loop_for_ingestor):
+        port_holder, ready = [], threading.Event()
+
+        good_frame_1 = _frame_message(1)
+        malformed = _frame_message(2)
+        malformed["data"]["risk"] = "not-a-dict-this-will-raise-attributeerror"  # .get() on a str raises
+        good_frame_2 = _frame_message(3)
+        good_frame_3 = _frame_message(4)
+
+        payloads = [good_frame_1, malformed, good_frame_2, good_frame_3]
+        server_thread = threading.Thread(target=_run_fake_server, args=(port_holder, payloads, ready), daemon=True)
+        server_thread.start()
+        ready.wait(timeout=3)
+
+        settings = Settings(_env_file=None, streaming_host="127.0.0.1", streaming_json_port=port_holder[0], streaming_reconnect_interval_s=0.2)
+        state = LatestState(ring_buffer_size=50, track_grace_period_s=2.0)
+        hub = LiveBroadcastHub()
+        ingestor = PerceptionIngestor(settings, state, db, hub, event_loop_for_ingestor)
+        ingestor.start()
+
+        # If the bug regresses, frames_received will get stuck at 1 (frame 1 processed, frame 2
+        # kills the thread, frames 3/4 are never read) -- this deadline distinguishes "reached 4"
+        # from "stuck forever", not just "eventually reached at least something".
+        deadline = time.time() + 5
+        while time.time() < deadline and state.connection.frames_received < 4:
+            time.sleep(0.05)
+
+        assert state.connection.frames_received == 4, "ingestion thread stopped processing after the malformed message -- the silent-death bug regressed"
+        assert state.connection.last_frame_id == 4
+        assert state.connection.state == "connected"
+
+        ingestor.stop()
+        server_thread.join(timeout=3)

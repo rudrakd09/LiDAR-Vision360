@@ -19,7 +19,12 @@ export function ClearancePanel({ clearance, risk }: { clearance: ClearanceData |
               return (
                 <div key={dir} className="clearance-cell" style={isMin ? { borderColor: "var(--critical)" } : undefined}>
                   <div className="dir-label">{DIRECTION_LABEL[dir]}</div>
-                  <div className="dir-value">{reading.distance_m.toFixed(1)} m</div>
+                  {/* 2 decimals, not 1 -- at 1 decimal, small real frame-to-frame jitter (e.g.
+                      5.234 -> 5.228 -> 5.235) all rounds to the same displayed "5.2 m" for many
+                      consecutive frames, which reads as "frozen" even though the underlying data
+                      is genuinely updating every frame -- see Header's own frame counter for the
+                      actual, unambiguous liveness proof. */}
+                  <div className="dir-value">{reading.distance_m.toFixed(2)} m</div>
                 </div>
               );
             })}

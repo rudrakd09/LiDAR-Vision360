@@ -101,3 +101,53 @@ class TestEventLimitCapping:
         settings = get_settings()
         resp = client.get(f"/api/collision-events?limit={settings.backend_event_max_limit + 1000}")
         assert resp.status_code == 200  # never errors, just silently capped server-side
+
+
+class TestEventsAreSessionScopedByDefault:
+    """Regression test for the "Event Timeline shows stale events from previous runs" bug:
+    /api/events and friends must default to the currently active session, not every event ever
+    recorded across every past ingestion connection -- a live dashboard should see the current
+    run's events, not a jumble of every previous demo run's history mixed in."""
+
+    def _seed_two_sessions(self, client):
+        from backend.models_db import CollisionEvent, SessionRecord
+
+        db = client.app.state.db
+        with db.session() as db_session:
+            db_session.add(SessionRecord(id="session-old", source_id="old_scenario", status="ended"))
+            db_session.add(SessionRecord(id="session-current", source_id="08_approaching_obstacle", status="active"))
+            db_session.add(CollisionEvent(session_id="session-old", frame_id=1, timestamp=1.0, risk_level="critical", previous_risk_level=None))
+            db_session.add(CollisionEvent(session_id="session-current", frame_id=1, timestamp=2.0, risk_level="safe", previous_risk_level=None))
+            db_session.commit()
+        client.app.state.latest_state.current_session_id = "session-current"
+
+    def test_default_query_only_returns_current_session_events(self, client):
+        self._seed_two_sessions(client)
+        resp = client.get("/api/collision-events")
+        assert resp.status_code == 200
+        events = resp.json()
+        assert len(events) == 1
+        assert events[0]["session_id"] == "session-current"
+
+    def test_session_id_all_returns_every_session(self, client):
+        self._seed_two_sessions(client)
+        resp = client.get("/api/collision-events?session_id=all")
+        assert resp.status_code == 200
+        session_ids = {e["session_id"] for e in resp.json()}
+        assert session_ids == {"session-old", "session-current"}
+
+    def test_explicit_session_id_returns_only_that_one(self, client):
+        self._seed_two_sessions(client)
+        resp = client.get("/api/collision-events?session_id=session-old")
+        assert resp.status_code == 200
+        events = resp.json()
+        assert len(events) == 1
+        assert events[0]["session_id"] == "session-old"
+
+    def test_no_active_session_means_no_filter(self, client):
+        # If nothing is currently active (e.g. the bridge was never started), showing all history
+        # is more useful than showing nothing -- there is no "current" to default to.
+        self._seed_two_sessions(client)
+        client.app.state.latest_state.current_session_id = None
+        resp = client.get("/api/collision-events")
+        assert len(resp.json()) == 2

@@ -16,6 +16,16 @@ export interface LiveSocketState {
   backendConnection: ConnectionStatus | null;
   latestFrame: PerceptionFrameData | null;
   lastError: string | null;
+  /** Client-side wall-clock time (`Date.now()`) the most recent "frame" WS message arrived --
+   * independent proof of live delivery, not derived from anything the server claims about
+   * itself. Used to compute staleness (see `useStaleness`) and is the actual answer to "is this
+   * dashboard currently receiving fresh frames." */
+  lastFrameReceivedAt: number | null;
+  /** How many "frame" messages this browser tab has received since it connected -- increments on
+   * every single one, including ones whose content happens to be numerically similar to the
+   * last (e.g. a stable clearance reading) -- this counter moving is proof of new data arriving
+   * even when the displayed numbers don't visibly change. */
+  framesReceivedByClient: number;
 }
 
 const RECONNECT_DELAY_MS = 2000;
@@ -26,6 +36,8 @@ export function useLiveSocket(): LiveSocketState {
     backendConnection: null,
     latestFrame: null,
     lastError: null,
+    lastFrameReceivedAt: null,
+    framesReceivedByClient: 0,
   });
 
   const shouldReconnect = useRef(true);
@@ -58,7 +70,12 @@ export function useLiveSocket(): LiveSocketState {
             latestFrame: message.data.latest_frame ?? prev.latestFrame,
           }));
         } else if (message.type === "frame") {
-          setState((prev) => ({ ...prev, latestFrame: message.data }));
+          setState((prev) => ({
+            ...prev,
+            latestFrame: message.data,
+            lastFrameReceivedAt: Date.now(),
+            framesReceivedByClient: prev.framesReceivedByClient + 1,
+          }));
         } else if (message.type === "error") {
           setState((prev) => ({ ...prev, lastError: message.data.message }));
         }

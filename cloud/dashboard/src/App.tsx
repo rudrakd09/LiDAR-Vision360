@@ -7,11 +7,17 @@ import { TrackedObjectsTable } from "./components/TrackedObjectsTable";
 import { EventTimeline } from "./components/EventTimeline";
 
 export default function App() {
-  const { dashboardConnectionState, backendConnection, latestFrame } = useLiveSocket();
+  const { dashboardConnectionState, backendConnection, latestFrame, lastFrameReceivedAt, framesReceivedByClient } = useLiveSocket();
 
   return (
     <div className="dashboard">
-      <Header dashboardConnectionState={dashboardConnectionState} backendConnection={backendConnection} />
+      <Header
+        dashboardConnectionState={dashboardConnectionState}
+        backendConnection={backendConnection}
+        latestFrame={latestFrame}
+        lastFrameReceivedAt={lastFrameReceivedAt}
+        framesReceivedByClient={framesReceivedByClient}
+      />
       <StatTiles frame={latestFrame} connection={backendConnection} />
       <EnvironmentMap frame={latestFrame} />
       <ClearancePanel clearance={latestFrame?.clearance ?? null} risk={latestFrame?.risk ?? null} />

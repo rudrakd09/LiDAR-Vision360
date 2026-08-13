@@ -86,7 +86,24 @@ class PerceptionIngestor:
                     if not chunk:
                         raise ConnectionError("remote closed the connection")
                     for message in framer.feed(chunk):
-                        self._dispatch(message)
+                        # Deliberately broad and per-message, not just around the socket read:
+                        # a bug in dispatch (a malformed/unexpected payload shape, a transient DB
+                        # error on the event-transition write, ...) must never kill this whole
+                        # background thread -- if it did, `connection.state` would stay frozen at
+                        # "connected" forever with no further frames ever processed, which is
+                        # indistinguishable from "everything is fine" to any REST/WebSocket caller
+                        # (see docs/cloud.md "Known limitations" -- found via a real dashboard bug
+                        # report, not a hypothetical: `AttributeError: 'str' object has no
+                        # attribute 'get'` from a malformed `risk`/`clearance` field was directly
+                        # reproduced killing this thread with the exact old code, see
+                        # TestIngestionSurvivesBadMessages). One bad message is logged and
+                        # skipped, mirroring the same "one bad scan must not kill the whole run"
+                        # principle scripts/serve_unity_bridge.py already applies to the
+                        # perception pipeline itself.
+                        try:
+                            self._dispatch(message)
+                        except Exception:  # noqa: BLE001 -- see comment above
+                            logger.exception("[INGEST] Error handling message (type=%s) -- skipping, connection stays up.", message.get("message_type"))
             except OSError as e:
                 logger.warning("[INGEST] Connection error: %s", e)
             finally:
@@ -117,8 +134,10 @@ class PerceptionIngestor:
 
     def _handle_system_status(self, message: dict[str, Any]) -> None:
         data = message.get("data") or {}
-        self.state.connection.source_id = data.get("source_id")
-        self.state.connection.scan_rate_hz = data.get("scan_rate_hz")
+        if data.get("source_id"):
+            self.state.connection.source_id = data["source_id"]
+        if data.get("scan_rate_hz") is not None:
+            self.state.connection.scan_rate_hz = data["scan_rate_hz"]
 
     def _handle_frame(self, message: dict[str, Any]) -> None:
         frame_id = message.get("frame_id")
@@ -131,6 +150,19 @@ class PerceptionIngestor:
         self._last_accepted_frame_id = frame_id
 
         data = message.get("data") or {}
+
+        # `source_id` also lives on the SYSTEM_STATUS message, but that is only ever published
+        # once per bridge *run* (see docs/cloud.md "Known limitations"), so a client that connects
+        # after it already went out -- any late-connecting dashboard/backend, not a hypothetical --
+        # would otherwise never learn it and show "no active session" despite frames actively
+        # flowing. `data.source_id` is on *every* PERCEPTION_FRAME
+        # (`serialization.unity_protocol.build_frame_message`'s own `source_id` field, always
+        # present), so use that as the primary source and let SYSTEM_STATUS only add
+        # `scan_rate_hz` (which frame data doesn't carry).
+        source_id = data.get("source_id")
+        if source_id:
+            self.state.connection.source_id = source_id
+
         self.state.record_frame(data, frame_id)
         self._detect_and_persist_transitions(data, frame_id, message.get("timestamp"))
         self._broadcast({"type": "frame", "frame_id": frame_id, "data": data})

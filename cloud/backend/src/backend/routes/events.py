@@ -3,6 +3,14 @@
 Every endpoint here is database-backed (not the in-memory ring buffer) and caps `limit` at
 `Settings.backend_event_max_limit` regardless of what the caller requests -- "do not expose
 unlimited historical records."
+
+**Session-scoped by default.** The database accumulates events across every ingestion connection
+ever made against it (each bridge start/stop is its own `SessionRecord`) -- a live dashboard
+querying these endpoints with no filter would otherwise see old runs' events mixed in with the
+current one, which is exactly what made a genuinely-live backend look "stuck showing stale data"
+in practice (found via a real bug report, not a hypothetical). Default behavior: if a perception
+session is currently active, only that session's events are returned; pass `?session_id=all` to
+see everything, or a specific id to see one particular past session.
 """
 
 from __future__ import annotations
@@ -28,34 +36,71 @@ def _capped_limit(limit: int | None, settings: Settings) -> int:
     return max(1, min(limit, settings.backend_event_max_limit))
 
 
+def _resolve_session_filter(session_id: str | None, state: LatestState) -> str | None:
+    """`None` return means "no filter, show everything". Explicit `session_id=all` opts out of
+    the default scoping; an explicit specific id is used as-is (even if it's not the active
+    session -- lets a caller look at a past run); omitting the param entirely defaults to
+    whatever session is currently active, or no filter if none is (nothing to scope to)."""
+    if session_id == "all":
+        return None
+    if session_id:
+        return session_id
+    return state.current_session_id  # None if nothing is active -- falls through to "no filter"
+
+
 @router.get("/collision-events", response_model=list[CollisionEventResponse])
-def collision_events(limit: int | None = Query(default=None, ge=1), db: Database = Depends(get_db)) -> list[CollisionEvent]:
+def collision_events(
+    limit: int | None = Query(default=None, ge=1),
+    session_id: str | None = Query(default=None, description='Filter to one session, or "all". Defaults to the currently active session.'),
+    db: Database = Depends(get_db), state: LatestState = Depends(get_state),
+) -> list[CollisionEvent]:
     settings = get_settings()
     cap = _capped_limit(limit, settings)
-    with db.session() as session:
-        rows = session.execute(select(CollisionEvent).order_by(CollisionEvent.recorded_at.desc()).limit(cap)).scalars().all()
-        return list(rows)
+    scope = _resolve_session_filter(session_id, state)
+    with db.session() as db_session:
+        query = select(CollisionEvent).order_by(CollisionEvent.recorded_at.desc()).limit(cap)
+        if scope is not None:
+            query = query.where(CollisionEvent.session_id == scope)
+        return list(db_session.execute(query).scalars().all())
 
 
 @router.get("/clearance-events", response_model=list[ClearanceEventResponse])
-def clearance_events(limit: int | None = Query(default=None, ge=1), db: Database = Depends(get_db)) -> list[ClearanceEvent]:
+def clearance_events(
+    limit: int | None = Query(default=None, ge=1),
+    session_id: str | None = Query(default=None, description='Filter to one session, or "all". Defaults to the currently active session.'),
+    db: Database = Depends(get_db), state: LatestState = Depends(get_state),
+) -> list[ClearanceEvent]:
     settings = get_settings()
     cap = _capped_limit(limit, settings)
-    with db.session() as session:
-        rows = session.execute(select(ClearanceEvent).order_by(ClearanceEvent.recorded_at.desc()).limit(cap)).scalars().all()
-        return list(rows)
+    scope = _resolve_session_filter(session_id, state)
+    with db.session() as db_session:
+        query = select(ClearanceEvent).order_by(ClearanceEvent.recorded_at.desc()).limit(cap)
+        if scope is not None:
+            query = query.where(ClearanceEvent.session_id == scope)
+        return list(db_session.execute(query).scalars().all())
 
 
 @router.get("/events")
-def events(limit: int | None = Query(default=None, ge=1), db: Database = Depends(get_db)) -> list[dict[str, Any]]:
+def events(
+    limit: int | None = Query(default=None, ge=1),
+    session_id: str | None = Query(default=None, description='Filter to one session, or "all". Defaults to the currently active session.'),
+    db: Database = Depends(get_db), state: LatestState = Depends(get_state),
+) -> list[dict[str, Any]]:
     """Combined collision + clearance events, most-recent-first, capped the same way each
     individual endpoint is -- convenient for a single dashboard timeline component that doesn't
     care which engine produced a given event."""
     settings = get_settings()
     cap = _capped_limit(limit, settings)
-    with db.session() as session:
-        collisions = session.execute(select(CollisionEvent).order_by(CollisionEvent.recorded_at.desc()).limit(cap)).scalars().all()
-        clearances = session.execute(select(ClearanceEvent).order_by(ClearanceEvent.recorded_at.desc()).limit(cap)).scalars().all()
+    scope = _resolve_session_filter(session_id, state)
+
+    with db.session() as db_session:
+        collision_query = select(CollisionEvent).order_by(CollisionEvent.recorded_at.desc()).limit(cap)
+        clearance_query = select(ClearanceEvent).order_by(ClearanceEvent.recorded_at.desc()).limit(cap)
+        if scope is not None:
+            collision_query = collision_query.where(CollisionEvent.session_id == scope)
+            clearance_query = clearance_query.where(ClearanceEvent.session_id == scope)
+        collisions = db_session.execute(collision_query).scalars().all()
+        clearances = db_session.execute(clearance_query).scalars().all()
 
     combined = [
         {"event_type": "collision", "recorded_at": e.recorded_at, "frame_id": e.frame_id, "timestamp": e.timestamp,
