@@ -2,7 +2,7 @@
  * REST fetch helpers -- talks to the local cloud backend (`cloud/backend`, default
  * `http://localhost:8000`, overridable via `VITE_API_BASE_URL` for a non-default port/host).
  */
-import type { CombinedEvent, ConnectionStatus, PerceptionFrameData, PerceptionObject, SessionRecord, TrackRosterEntry } from "../types";
+import type { CombinedEvent, ConnectionStatus, PerceptionFrameData, PerceptionObject, SessionRecord, TrackHistoryPoint, TrackRosterEntry, TrackSummary } from "../types";
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 
@@ -19,6 +19,8 @@ export const api = {
   latest: () => getJson<PerceptionFrameData>("/api/latest"),
   objects: () => getJson<PerceptionObject[]>("/api/objects"),
   tracks: () => getJson<TrackRosterEntry[]>("/api/tracks"),
+  trackDetail: (trackId: string) => getJson<TrackSummary>(`/api/tracks/${encodeURIComponent(trackId)}`),
+  trackHistory: (trackId: string, limit = 50) => getJson<TrackHistoryPoint[]>(`/api/tracking-history?track_id=${encodeURIComponent(trackId)}&limit=${limit}`),
   events: (limit = 50) => getJson<CombinedEvent[]>(`/api/events?limit=${limit}`),
   sessions: (limit = 20) => getJson<SessionRecord[]>(`/api/sessions?limit=${limit}`),
 };

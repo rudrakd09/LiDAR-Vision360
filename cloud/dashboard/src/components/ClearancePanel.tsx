@@ -43,15 +43,23 @@ export function ClearancePanel({ clearance, risk }: { clearance: ClearanceData |
             </div>
             <div className="summary-item">
               <div className="summary-label">Critical Object</div>
-              <div className="summary-value">
-                {mostCriticalObject ? (
-                  <>
-                    Track #{mostCriticalObject.track_id} <span className={`badge risk-${mostCriticalObject.risk_level}`}>{mostCriticalObject.risk_level}</span>
-                  </>
-                ) : (
-                  "None"
-                )}
-              </div>
+              {/* Only ever populated from the real collision assessment's own most_critical
+                  result -- never fabricated when risk is SAFE and there is genuinely no critical
+                  object (most_critical is null in that case, not omitted/defaulted to something
+                  plausible-looking). */}
+              {mostCriticalObject ? (
+                <div className="summary-value">
+                  <div>
+                    Track #{mostCriticalObject.track_id} &mdash; {mostCriticalObject.classification.replace(/_/g, " ")}
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 400, color: "var(--text-dim)" }}>
+                    Distance: {mostCriticalObject.distance.toFixed(1)} m &middot; TTC: {mostCriticalObject.ttc != null ? `${mostCriticalObject.ttc.toFixed(1)} s` : "N/A"}
+                  </div>
+                  <span className={`badge risk-${mostCriticalObject.risk_level}`}>{mostCriticalObject.risk_level}</span>
+                </div>
+              ) : (
+                <div className="summary-value">None</div>
+              )}
             </div>
           </div>
         </>

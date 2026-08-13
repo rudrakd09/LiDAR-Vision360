@@ -13,8 +13,8 @@ export function StatTiles({ frame, connection }: { frame: PerceptionFrameData | 
         <div className="stat-label">Risk</div>
         <div className={`stat-value ${risk ? `risk-${risk}` : ""}`}>{risk ? risk.toUpperCase() : "—"}</div>
       </div>
-      <div className="stat-tile">
-        <div className="stat-label">TTC</div>
+      <div className="stat-tile" title="The most-critical tracked object's TTC (results[] can carry a different, finite TTC per object -- see the Tracked Objects table for object-specific values).">
+        <div className="stat-label">Min TTC</div>
         <div className="stat-value">{mostCritical?.ttc != null ? `${mostCritical.ttc.toFixed(1)} s` : "N/A"}</div>
       </div>
       <div className="stat-tile">

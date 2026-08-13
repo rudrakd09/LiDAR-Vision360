@@ -1,13 +1,23 @@
 import type { DashboardConnectionState } from "../api/useLiveSocket";
 import { useStaleness } from "../hooks/useStaleness";
+import { useMeasuredScanRate } from "../hooks/useMeasuredScanRate";
 import type { ConnectionStatus, PerceptionFrameData } from "../types";
 
-const STATE_LABEL: Record<DashboardConnectionState, string> = {
-  connecting: "CONNECTING",
-  open: "LIVE",
-  reconnecting: "RECONNECTING",
-  closed: "OFFLINE",
-};
+/**
+ * Five DISTINCT status facts, deliberately never collapsed into one another -- this is what
+ * fixed a real bug where "Backend->Bridge: connected" and "Session: no active session" showing
+ * side by side read as contradictory/confusing, and where a dashboard that was actually stuck on
+ * an old frame still showed "LIVE" because only the socket-open state was ever checked:
+ *
+ *   System   -- is a fresh perception frame actually arriving right now (client-timestamped,
+ *               not a claim the server makes about itself)? LIVE / STALE / DISCONNECTED.
+ *   Session  -- is the backend's ingestion of the Python bridge stream currently active
+ *               (server-computed from connection state + last-message recency)? ACTIVE / INACTIVE.
+ *   Backend  -- is *this browser tab's own* WebSocket to the backend open? CONNECTED / DISCONNECTED.
+ *   Bridge   -- is the backend, in turn, connected to the Python perception bridge (port 5006)?
+ *               CONNECTED / DISCONNECTED.
+ *   Scan     -- measured frame arrival rate, client-side (see useMeasuredScanRate).
+ */
 
 export function Header({
   dashboardConnectionState,
@@ -23,47 +33,48 @@ export function Header({
   framesReceivedByClient: number;
 }) {
   const isStale = useStaleness(lastFrameReceivedAt);
-  const sessionLabel = backendConnection?.source_id ?? "no active session";
+  const measuredHz = useMeasuredScanRate(latestFrame?.sequence_number ?? null);
+  const scenarioLabel = backendConnection?.source_id ?? "no active session";
 
-  // Three DISTINCT things, per this project's explicit requirement not to conflate them:
-  //   1. Is the WebSocket to the backend itself open (dashboardConnectionState)?
-  //   2. Is the backend, in turn, connected to the Python bridge (backendConnection.state)?
-  //   3. Are fresh perception frames actually arriving right now (perceptionLabel below)?
-  // A backend can be "connected" to the bridge while this dashboard's own perception feed is
-  // stale (e.g. the bridge stalled) or has never produced a frame at all -- these are not the
-  // same fact and showing only #1/#2 is exactly what made a real stale-data bug look like
-  // "everything says LIVE" from the header alone.
-  let perceptionLabel: string;
-  let perceptionClass: string;
+  let systemLabel: string;
+  let systemClass: string;
   if (latestFrame == null) {
-    perceptionLabel = "NO DATA YET";
-    perceptionClass = "state-closed";
+    systemLabel = "DISCONNECTED";
+    systemClass = "state-closed";
   } else if (isStale) {
-    perceptionLabel = "STALE";
-    perceptionClass = "state-reconnecting";
+    systemLabel = "STALE";
+    systemClass = "state-reconnecting";
   } else {
-    perceptionLabel = "LIVE";
-    perceptionClass = "state-open";
+    systemLabel = "LIVE";
+    systemClass = "state-open";
   }
+
+  const sessionActive = backendConnection?.session_status === "active";
+  const backendUp = dashboardConnectionState === "open";
+  const bridgeUp = backendConnection?.state === "connected";
 
   return (
     <header className="header panel">
       <h1>LiDAR VISION 360</h1>
       <div className="header-right">
-        <span className={`live-dot state-${dashboardConnectionState}`}>WS: {STATE_LABEL[dashboardConnectionState]}</span>
-        <span>Session: {sessionLabel}</span>
-        {backendConnection && (
-          <span>
-            Backend&rarr;Bridge: <strong className={backendConnection.state === "connected" ? "risk-safe" : "risk-warning"}>{backendConnection.state}</strong>
-          </span>
-        )}
-        <span className={`live-dot ${perceptionClass}`} title="Whether a new perception frame has arrived within the last few seconds -- independent of whether the WebSocket/backend connection itself is open.">
-          Perception: {perceptionLabel}
-        </span>
+        <StatusBadge label="System" value={systemLabel} className={systemClass} title="Whether a new perception frame has arrived within the last few seconds -- independent of whether the WebSocket/backend connection itself is open." />
+        <StatusBadge label="Session" value={sessionActive ? "ACTIVE" : "INACTIVE"} className={sessionActive ? "state-open" : "state-reconnecting"} title="Whether the backend's ingestion of the Python bridge stream is currently active (server-computed)." />
+        <StatusBadge label="Backend" value={backendUp ? "CONNECTED" : "DISCONNECTED"} className={backendUp ? "state-open" : "state-closed"} title="This browser tab's own WebSocket connection to the backend." />
+        <StatusBadge label="Bridge" value={bridgeUp ? "CONNECTED" : "DISCONNECTED"} className={bridgeUp ? "state-open" : "state-closed"} title="Whether the backend is connected to the Python perception bridge (port 5006)." />
+        <span title="Measured client-side from frame arrival timing, not reported by the server.">Scan: {measuredHz != null ? `~${measuredHz.toFixed(1)} Hz` : "—"}</span>
+        <span title="The scenario/source_id currently being ingested (from the perception frame's own source_id, or 'no active session' if none has arrived yet).">Scenario: {scenarioLabel}</span>
         <span title="This browser tab's own count of WS 'frame' messages received, and the current frame's own frame_id -- proof of live delivery, not a claim.">
           Frame #{latestFrame?.sequence_number ?? "—"} ({framesReceivedByClient} received)
         </span>
       </div>
     </header>
+  );
+}
+
+function StatusBadge({ label, value, className, title }: { label: string; value: string; className: string; title: string }) {
+  return (
+    <span className={`live-dot ${className}`} title={title}>
+      {label}: {value}
+    </span>
   );
 }

@@ -151,3 +151,133 @@ class TestEventsAreSessionScopedByDefault:
         client.app.state.latest_state.current_session_id = None
         resp = client.get("/api/collision-events")
         assert len(resp.json()) == 2
+
+
+class TestRootAndDocs:
+    def test_root_returns_service_info_not_404(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["name"] == "LiDAR-Vision360 Backend"
+        assert "docs" in body
+        assert "endpoints" in body
+        assert "/health" in body["endpoints"]
+        assert "/api/health" in body["endpoints"]
+        assert "stream" in body
+        assert "session_status" in body["stream"]
+
+    def test_docs_available(self, client):
+        resp = client.get("/docs")
+        assert resp.status_code == 200
+
+    def test_openapi_schema_available(self, client):
+        resp = client.get("/openapi.json")
+        assert resp.status_code == 200
+
+
+class TestBarePathAliases:
+    """Every route must work identically at its bare path and its original /api/* path -- 'add
+    compatible routes rather than breaking existing clients'."""
+
+    def test_health_matches_at_both_paths(self, client):
+        bare, prefixed = client.get("/health"), client.get("/api/health")
+        assert bare.status_code == prefixed.status_code == 200
+        assert bare.json()["status"] == prefixed.json()["status"] == "ok"  # uptime_s itself may differ by a few ms between the two calls
+
+    def test_status_identical_at_both_paths(self, client):
+        assert client.get("/status").json()["state"] == client.get("/api/status").json()["state"]
+
+    def test_objects_identical_at_both_paths(self, client):
+        state = client.app.state.latest_state
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None}, frame_id=1)
+        assert client.get("/objects").json() == client.get("/api/objects").json()
+
+    def test_metrics_available_at_both_paths(self, client):
+        assert client.get("/metrics").status_code == client.get("/api/metrics").status_code == 200
+
+
+class TestTrackDetailAndHistory:
+    def test_unknown_track_returns_404(self, client):
+        resp = client.get("/api/tracks/never-seen")
+        assert resp.status_code == 404
+
+    def test_known_track_returns_summary(self, client):
+        state = client.app.state.latest_state
+        state.record_frame({"objects": [{"track_id": "t7", "classification": "vehicle_like", "centroid": {"x": 1.0, "y": 2.0}, "distance": 3.0}], "risk": None, "clearance": None}, frame_id=1)
+        resp = client.get("/api/tracks/t7")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["track_id"] == "t7"
+        assert body["frames_tracked"] == 1
+        assert body["current"]["classification"] == "vehicle_like"
+
+    def test_tracking_history_requires_track_id_param(self, client):
+        resp = client.get("/api/tracking-history")
+        assert resp.status_code == 422  # required query param missing
+
+    def test_tracking_history_unknown_track_returns_404(self, client):
+        resp = client.get("/api/tracking-history?track_id=never-seen")
+        assert resp.status_code == 404
+
+    def test_tracking_history_returns_points_for_known_track(self, client):
+        state = client.app.state.latest_state
+        for i in range(3):
+            state.record_frame({"objects": [{"track_id": "t7", "classification": "vehicle_like", "centroid": {"x": float(i), "y": 0.0}, "distance": 1.0}], "risk": None, "clearance": None}, frame_id=i)
+        resp = client.get("/api/tracking-history?track_id=t7")
+        assert resp.status_code == 200
+        points = resp.json()
+        assert len(points) == 3
+        assert [p["x"] for p in points] == [0.0, 1.0, 2.0]
+
+    def test_tracking_history_respects_limit(self, client):
+        state = client.app.state.latest_state
+        for i in range(5):
+            state.record_frame({"objects": [{"track_id": "t7", "classification": "vehicle_like", "centroid": {"x": float(i), "y": 0.0}, "distance": 1.0}], "risk": None, "clearance": None}, frame_id=i)
+        resp = client.get("/api/tracking-history?track_id=t7&limit=2")
+        assert len(resp.json()) == 2
+
+
+class TestSessionDetail:
+    def test_unknown_session_returns_404(self, client):
+        resp = client.get("/api/sessions/never-existed")
+        assert resp.status_code == 404
+
+    def test_known_session_returns_detail(self, client):
+        from backend.models_db import SessionRecord
+
+        db = client.app.state.db
+        with db.session() as db_session:
+            db_session.add(SessionRecord(id="s1", source_id="08_approaching_obstacle", status="ended", frame_count=42))
+            db_session.commit()
+        resp = client.get("/api/sessions/s1")
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "s1"
+        assert resp.json()["frame_count"] == 42
+
+    def test_active_session_detail_reflects_live_frame_count(self, client):
+        from backend.models_db import SessionRecord
+
+        db = client.app.state.db
+        with db.session() as db_session:
+            db_session.add(SessionRecord(id="s2", source_id="08_approaching_obstacle", status="active", frame_count=0))
+            db_session.commit()
+        state = client.app.state.latest_state
+        state.current_session_id = "s2"
+        for i in range(3):
+            state.record_frame({"objects": [], "risk": None, "clearance": None}, frame_id=i)
+        resp = client.get("/api/sessions/s2")
+        assert resp.json()["frame_count"] == 3  # patched from live state, not the stale DB 0
+
+
+class TestMetrics:
+    def test_metrics_returns_real_counters(self, client):
+        state = client.app.state.latest_state
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None}, frame_id=1)
+        resp = client.get("/api/metrics")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["frames_received"] == 1
+        assert body["active_tracks"] == 1
+        assert body["ring_buffer_used"] == 1
+        assert "session_status" in body
+        assert "uptime_s" in body

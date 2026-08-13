@@ -6,8 +6,19 @@
  * see docs/cloud.md "Architecture": the dashboard never talks to port 5006 itself).
  */
 import { useEffect, useRef, useState } from "react";
-import { wsUrl } from "./client";
+import { api, wsUrl } from "./client";
 import type { ConnectionStatus, LiveMessage, PerceptionFrameData } from "../types";
+
+// How often to re-fetch GET /api/status as a supplementary refresh of `backendConnection`.
+// The WebSocket's own "snapshot" message only ever arrives ONCE, right when the socket first
+// opens -- nothing about the regular "frame"/"heartbeat" messages updates `connection.state`/
+// `session_status`/`source_id` again afterward (found via live testing: the Bridge/Session
+// badges stayed frozen at their very-first-connect values for the rest of a long session, even
+// after the underlying facts had genuinely changed). This mirrors the exact same "poll a rarely-
+// changing REST endpoint on a modest interval" pattern `EventTimeline` already uses for the same
+// reason (events are rare; connection-state changes are rare too) -- not continuous/unbounded
+// polling, and it never substitutes for the WebSocket's own frame delivery.
+const CONNECTION_REFRESH_INTERVAL_MS = 2000;
 
 export type DashboardConnectionState = "connecting" | "open" | "reconnecting" | "closed";
 
@@ -99,6 +110,26 @@ export function useLiveSocket(): LiveSocketState {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close();
       setState((prev) => ({ ...prev, dashboardConnectionState: "closed" }));
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refresh() {
+      try {
+        const status = await api.status();
+        if (!cancelled && status) setState((prev) => ({ ...prev, backendConnection: status }));
+      } catch {
+        // backend unreachable for this one poll -- leave the last-known backendConnection showing
+        // rather than clearing it; the WS's own onclose/staleness handling already covers "the
+        // connection itself is down".
+      }
+    }
+    refresh(); // don't wait a full interval for the first refresh
+    const interval = setInterval(refresh, CONNECTION_REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
     };
   }, []);
 

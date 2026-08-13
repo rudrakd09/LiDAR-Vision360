@@ -4,7 +4,14 @@ thread (the only writer) and REST/WebSocket handlers (readers) via one lock.
 
 Never grows without bound: `frames` is a `deque(maxlen=Settings.backend_ring_buffer_size)`, the
 same "bounded, drop-oldest" principle `perception.streaming.LatestFrameQueue` already established
-on the Python->Unity side, applied here to the backend's own recent-frame cache.
+on the Python->Unity side, applied here to the backend's own recent-frame cache. Per-track history
+(`_track_history`) is bounded the same way, per track, at `Settings.backend_track_history_length`.
+
+**No tracking algorithm lives here.** Every field recorded below is copied verbatim from what
+`tracking.ObjectTracker` (Phase 7) already put in the frame's own `objects[]` entries -- this
+class only remembers a bounded window of what it was already told, per track_id, so a caller can
+ask "how did this specific track move over the last N scans" without re-deriving it from scratch
+on every request.
 """
 
 from __future__ import annotations
@@ -30,16 +37,37 @@ class ConnectionInfo:
     scan_rate_hz: float | None = None
 
 
+def compute_session_status(connection: ConnectionInfo, now: float, stale_threshold_s: float) -> str:
+    """"active" | "stale" | "disconnected" -- deliberately a *separate* concept from `connection.
+    state` (the raw TCP state): a socket can stay "connected" while the bridge process on the
+    other end has stalled without actually closing it, and a fresh connection with no message yet
+    is not the same thing as one that *was* receiving messages and stopped. See docs/cloud.md
+    "Session lifecycle" -- this is what fixes "Backend->Bridge: connected" / "Session: no active
+    session" ever being shown as if they were the same fact.
+    """
+    if connection.state != "connected":
+        return "disconnected"
+    if connection.last_message_at is None:
+        return "active"  # freshly connected, grace period before the first message -- not stale
+    return "active" if (now - connection.last_message_at) <= stale_threshold_s else "stale"
+
+
 class LatestState:
     """One instance for the process lifetime (constructed in `main.py`'s lifespan, stored on
     `app.state`)."""
 
-    def __init__(self, ring_buffer_size: int, track_grace_period_s: float) -> None:
+    def __init__(self, ring_buffer_size: int, track_grace_period_s: float, track_history_length: int = 50) -> None:
         self._lock = threading.Lock()
         self._frames: deque[dict[str, Any]] = deque(maxlen=ring_buffer_size)
         self._latest_frame: dict[str, Any] | None = None
+
         self._track_last_seen: dict[str, tuple[dict[str, Any], float]] = {}  # track_id -> (object dict, last_seen_at)
+        self._track_first_seen: dict[str, float] = {}
+        self._track_frame_count: dict[str, int] = {}
+        self._track_history: dict[str, deque[dict[str, Any]]] = {}
+
         self._track_grace_period_s = track_grace_period_s
+        self._track_history_length = track_history_length
         self.connection = ConnectionInfo()
         self.current_session_id: str | None = None
 
@@ -52,12 +80,34 @@ class LatestState:
             self.connection.last_frame_id = frame_id
             self.connection.last_message_at = now
 
+            timestamp = frame_data.get("timestamp")
             for obj in frame_data.get("objects") or []:
                 track_id = obj.get("track_id")
-                if track_id:
-                    self._track_last_seen[track_id] = (obj, now)
+                if not track_id:
+                    continue
+                self._track_last_seen[track_id] = (obj, now)
+                if track_id not in self._track_first_seen:
+                    self._track_first_seen[track_id] = now
+                self._track_frame_count[track_id] = self._track_frame_count.get(track_id, 0) + 1
+                self._append_track_history(track_id, obj, frame_id, timestamp)
 
             self._prune_stale_tracks(now)
+
+    def _append_track_history(self, track_id: str, obj: dict[str, Any], frame_id: int | None, timestamp: Any) -> None:
+        history = self._track_history.setdefault(track_id, deque(maxlen=self._track_history_length))
+        centroid = obj.get("centroid") or {}
+        velocity = obj.get("velocity")
+        history.append({
+            "frame_id": frame_id,
+            "timestamp": timestamp,
+            "x": centroid.get("x"),
+            "y": centroid.get("y"),
+            "vx": velocity.get("vx") if velocity else None,
+            "vy": velocity.get("vy") if velocity else None,
+            "distance": obj.get("distance"),
+            "classification": obj.get("classification"),
+            "tracking_state": obj.get("tracking_state"),
+        })
 
     def record_heartbeat(self) -> None:
         with self._lock:
@@ -67,6 +117,9 @@ class LatestState:
         stale = [tid for tid, (_, seen_at) in self._track_last_seen.items() if now - seen_at > self._track_grace_period_s]
         for tid in stale:
             del self._track_last_seen[tid]
+            self._track_first_seen.pop(tid, None)
+            self._track_frame_count.pop(tid, None)
+            self._track_history.pop(tid, None)
 
     @property
     def latest_frame(self) -> dict[str, Any] | None:
@@ -81,23 +134,76 @@ class LatestState:
     def tracks_roster(self) -> list[dict[str, Any]]:
         """Every track_id seen within `track_grace_period_s`, most-recent sighting only --
         distinct from `latest_frame["objects"]` (this frame only) -- see `Settings.
-        backend_track_grace_period_s`'s own docstring for the Unity-side precedent this mirrors."""
+        backend_track_grace_period_s`'s own docstring for the Unity-side precedent this mirrors.
+        Includes the same first-seen/last-seen/frames-tracked summary fields `track_summary()`
+        returns for a single track, so a dashboard table doesn't need one request per row just to
+        show them."""
         now = time.time()
         with self._lock:
             self._prune_stale_tracks(now)
-            return [dict(obj, seconds_since_seen=round(now - seen_at, 3)) for obj, seen_at in self._track_last_seen.values()]
+            return [
+                dict(
+                    obj,
+                    seconds_since_seen=round(now - seen_at, 3),
+                    first_seen_at=self._track_first_seen.get(track_id),
+                    last_seen_at=seen_at,
+                    frames_tracked=self._track_frame_count.get(track_id, 0),
+                )
+                for track_id, (obj, seen_at) in self._track_last_seen.items()
+            ]
 
-    def snapshot_for_new_client(self) -> dict[str, Any]:
+    def track_summary(self, track_id: str) -> dict[str, Any] | None:
+        """`None` if `track_id` isn't currently known (never seen, or pruned after
+        `track_grace_period_s` with no sighting) -- a 404 at the route layer, not an empty/zeroed
+        object standing in for "doesn't exist"."""
+        now = time.time()
+        with self._lock:
+            self._prune_stale_tracks(now)
+            entry = self._track_last_seen.get(track_id)
+            if entry is None:
+                return None
+            obj, last_seen_at = entry
+            return {
+                "track_id": track_id,
+                "current": obj,
+                "first_seen_at": self._track_first_seen.get(track_id),
+                "last_seen_at": last_seen_at,
+                "seconds_since_seen": round(now - last_seen_at, 3),
+                "frames_tracked": self._track_frame_count.get(track_id, 0),
+                "history_length": len(self._track_history.get(track_id, ())),
+            }
+
+    def track_history(self, track_id: str, limit: int | None = None) -> list[dict[str, Any]] | None:
+        """`None` if `track_id` isn't currently known -- same distinction as `track_summary`.
+        `[]` (empty list, not `None`) is a real, valid answer for a track that exists but hasn't
+        recorded a history point yet (shouldn't normally happen, since a history point is
+        recorded the same moment a track first becomes known, but kept honest rather than assumed
+        impossible)."""
+        with self._lock:
+            if track_id not in self._track_last_seen:
+                return None
+            items = list(self._track_history.get(track_id, ()))
+        return items[-limit:] if limit else items
+
+    def session_status(self, stale_threshold_s: float) -> str:
+        return compute_session_status(self.connection, time.time(), stale_threshold_s)
+
+    def snapshot_for_new_client(self, stale_threshold_s: float) -> dict[str, Any]:
         """What a freshly-connected WebSocket client receives immediately, before any new frame
-        arrives -- mirrors the "send current state, then subscribe" pattern."""
+        arrives -- mirrors the "send current state, then subscribe" pattern. Includes
+        `session_status` (see `compute_session_status`) so a client that only ever reads this one
+        snapshot still gets an accurate answer, not a field silently missing -- see
+        docs/cloud.md "Session lifecycle" for why the WebSocket snapshot on its own is not enough
+        to keep this fresh for the lifetime of a long connection (the dashboard additionally
+        re-polls `GET /api/status` periodically for exactly that reason)."""
         with self._lock:
             return {
-                "connection": _connection_dict(self.connection),
+                "connection": _connection_dict(self.connection, self.session_status(stale_threshold_s)),
                 "latest_frame": self._latest_frame,
             }
 
 
-def _connection_dict(info: ConnectionInfo) -> dict[str, Any]:
+def _connection_dict(info: ConnectionInfo, session_status: str) -> dict[str, Any]:
     return {
         "state": info.state,
         "host": info.host,
@@ -109,4 +215,5 @@ def _connection_dict(info: ConnectionInfo) -> dict[str, Any]:
         "last_frame_id": info.last_frame_id,
         "source_id": info.source_id,
         "scan_rate_hz": info.scan_rate_hz,
+        "session_status": session_status,
     }

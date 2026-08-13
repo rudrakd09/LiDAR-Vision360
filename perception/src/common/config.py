@@ -476,6 +476,21 @@ class Settings(BaseSettings):
     # applied here to the same underlying question ("is this track still relevant right now").
     backend_track_grace_period_s: float = 2.0
 
+    # How many of the most recent per-scan position/velocity samples GET /api/tracking-history
+    # keeps for each track_id -- bounded like every other in-memory collection here (see
+    # backend_ring_buffer_size's own comment), so a long-lived track cannot grow this without
+    # bound either. Cleared (along with the rest of that track_id's bookkeeping) once the track
+    # itself is pruned from the roster (backend_track_grace_period_s elapsed with no sighting).
+    backend_track_history_length: int = 50
+
+    # A session is reported "active" only while a message (frame or heartbeat) has arrived within
+    # this many seconds -- distinct from the raw TCP `connection.state` (which stays "connected"
+    # even if the bridge process has stalled without actually dropping the socket). See
+    # docs/cloud.md "Session lifecycle". Kept as its own setting rather than reusing
+    # `streaming_connection_timeout_s` (Unity's own staleness threshold) since the backend and
+    # Unity are independent consumers that may reasonably tune this separately.
+    backend_session_stale_threshold_s: float = 3.0
+
     # --- Database (local-only; see the cloud-backend note above -- phase numbers below this point
     # in PROJECT_SPECIFICATION.md's original plan no longer match as-built history). Tried first;
     # if unreachable (no local Postgres, wrong credentials, driver missing), the backend falls back

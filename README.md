@@ -66,29 +66,35 @@ full rationale, including two justified additions inside `perception/src/` (`com
 
 ## Status
 
-**Phase 0 — Foundation: complete. Phase 2 — LiDAR Simulator: complete. Phase 3 — Preprocessing: complete. Phase 4 — Coordinate Transformation: complete. Phase 5 — Obstacle Clustering: complete. Phase 6 — Geometric Object Classification: complete.**
+**Phases 0–12 complete**, plus a local cloud backend + live dashboard (numbered "Phase 12/13/14"
+in the original spec, but see [docs/architecture.md](docs/architecture.md) "Status" for the
+as-built phase-number history): Foundation, LiDAR Simulator, Preprocessing, Coordinate
+Transformation, Obstacle Clustering, Geometric Object Classification, Object Tracking + Kalman
+Filter, 2D Occupancy Grid Mapping, Collision/Risk Engine (TTC + prediction), Directional Clearance
+Engine, Unity Digital Twin, real-time Python↔Unity structured streaming, and a local FastAPI
+backend + React/TypeScript dashboard consuming that same stream independently of Unity.
 
-Implemented: repository structure, configuration system, logging, canonical data models
-(`LiDARPoint`, `CartesianPoint`, `DetectedObject`, `ShapeFeatures`, `ScanFrame`,
-`PreprocessedScan`, `CartesianScan`, `ObstacleCluster`, `ClusteredScan`, `ClassifiedScan`), the
-`LiDARDataSource` abstraction, a minimal `SimulatedLiDARDataSource`, a full ray-casting 2D 360°
-LiDAR simulator (`simulator/`) with configurable environments, noise, moving obstacles, 10
-predefined scenarios, real-time pacing, recording/replay, a 2D debug visualizer, and a CLI; a
-preprocessing pipeline (`perception/src/preprocessing/`) with validation, range filtering, a
-circular local-outlier detector, a circular median noise filter, and optional cross-scan temporal
-smoothing; a vectorized (NumPy) polar-to-Cartesian coordinate transformer
-(`perception/src/coordinates/`); DBSCAN-based obstacle clustering (`perception/src/clustering/`),
-grouping LiDAR points into obstacle-candidate clusters with full geometric properties, free-space
-filtering, and 0/360°-safe angular-extent calculation; and a geometry-based obstacle classifier
-(`perception/src/objects/`) that scores each cluster against explainable rules (line/circle
-fitting, size gates) to report `WALL`/`VEHICLE_LIKE`/`POLE_LIKE`/`LARGE_OBSTACLE`/`PERSON_LIKE`/
-`UNKNOWN` with a confidence score and a human-readable reason -- explicitly **not**
-general-purpose object recognition. **358 automated tests total.**
+Implemented: repository structure, configuration system, logging, canonical data models across
+every stage; a full ray-casting 2D 360° LiDAR simulator (`simulator/`) with configurable
+environments, noise, moving obstacles, 10 predefined scenarios, real-time pacing, recording/replay,
+a 2D debug visualizer, and a CLI; preprocessing (validation, range filtering, outlier/noise
+filtering, optional temporal smoothing); vectorized polar→Cartesian coordinate transformation;
+DBSCAN obstacle clustering; geometry-based shape classification (`WALL`/`VEHICLE_LIKE`/
+`POLE_LIKE`/`LARGE_OBSTACLE`/`PERSON_LIKE`/`UNKNOWN`, explainable, **not** general-purpose object
+recognition); nearest-neighbour + Kalman-filter object tracking with persistent track IDs and
+velocity/trajectory estimation; a log-odds 2D occupancy grid; a collision/risk engine (TTC,
+footprint-intersection prediction, SAFE/WARNING/CRITICAL); a directional clearance engine
+(front/rear/left/right, corridor width, SAFE/CAUTION/LOW_CLEARANCE/CRITICAL); the Unity digital
+twin (`unity/LiDARVision360`); the real-time structured JSON + legacy raw streaming protocol
+(`perception/src/streaming/`, `scripts/serve_unity_bridge.py`); and `cloud/backend` +
+`cloud/dashboard` (see "Cloud backend & dashboard demo" below). **972 automated tests total**
+(perception 684, simulator 213, cloud backend 59, cloud dashboard 16) — see
+[docs/testing.md](docs/testing.md).
 
-Not yet implemented: tracking, occupancy mapping, collision/clearance engines, Unity, cloud
-backend/dashboard, alerts, hardware integration. See
+Not yet implemented: production cloud deployment/authentication, historical analytics beyond the
+bounded event log already in place, configurable alerts, hardware (STM32) integration. See
 [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) for the full phase list and each package's
-README/`docs/` page for per-subsystem status.
+README/`docs/` page for per-subsystem detail.
 
 ## Quickstart
 
@@ -177,6 +183,45 @@ python scripts/evaluate_classification.py
 `scripts/setup_env.ps1` / `scripts/setup_env.sh` automate all the install steps above (perception
 + simulator, with the `viz` extra).
 
+## Cloud backend & dashboard demo
+
+One command starts the whole stack (Python perception bridge + FastAPI backend + React dashboard),
+each in its own window:
+
+```powershell
+.\scripts\run_demo.ps1 -Scenario 08_approaching_obstacle -Rate 10
+```
+
+Then open `http://localhost:5173`. Unity connects to the same `127.0.0.1:5006` independently (open
+`unity/LiDARVision360` in the Editor, `LidarInputManager.mode = StructuredJsonTcp`, press Play) --
+Unity and the dashboard consume the identical stream, not one relaying to the other. See
+[docs/cloud.md](docs/cloud.md) for the full architecture and API reference.
+
+To run each piece by hand instead (three terminals):
+
+```powershell
+python scripts/serve_unity_bridge.py --scenario 08_approaching_obstacle --vehicle-speed 0 --rate 10
+```
+```powershell
+uvicorn backend.main:app --app-dir cloud/backend/src --host 0.0.0.0 --port 8000
+```
+```powershell
+cd cloud/dashboard; npm install; npm run dev
+```
+
+Other demo-worthy scenarios: `05_multiple_obstacles` (multiple simultaneous tracked objects),
+`06_narrow_corridor` (low/critical clearance), `07_moving_crossing` (a laterally-moving, not
+head-on, obstacle). `python -m simulator.cli list` shows all 10.
+
+Run every test suite (perception, simulator, backend, dashboard):
+
+```powershell
+pytest perception/tests -q
+pytest simulator/tests -q
+pytest cloud/backend/tests -q
+cd cloud/dashboard; npm test; npm run build
+```
+
 ## Documentation
 
 - [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) — full canonical specification
@@ -188,11 +233,14 @@ python scripts/evaluate_classification.py
 - [docs/coordinates.md](docs/coordinates.md) — coordinate transformation (Phase 4)
 - [docs/clustering.md](docs/clustering.md) — obstacle clustering (Phase 5)
 - [docs/object-classification.md](docs/object-classification.md) — geometric object classification (Phase 6)
-- [docs/tracking.md](docs/tracking.md), [docs/collision.md](docs/collision.md),
-  [docs/unity.md](docs/unity.md), [docs/cloud.md](docs/cloud.md),
-  [docs/hardware-integration.md](docs/hardware-integration.md) — status placeholders until
-  their phase lands
-- [docs/testing.md](docs/testing.md) — full test suite breakdown (358 tests)
+- [docs/tracking.md](docs/tracking.md) — object tracking + Kalman filter (Phase 7)
+- [docs/mapping.md](docs/mapping.md) — 2D occupancy grid mapping (Phase 8)
+- [docs/collision.md](docs/collision.md) — collision/risk engine + directional clearance (Phases 9–10)
+- [docs/unity.md](docs/unity.md) — Unity digital twin (Phase 11)
+- [docs/communication.md](docs/communication.md) — real-time Python↔Unity streaming protocol (Phase 12)
+- [docs/cloud.md](docs/cloud.md) — local cloud backend + live dashboard
+- [docs/hardware-integration.md](docs/hardware-integration.md) — status placeholder until that phase lands
+- [docs/testing.md](docs/testing.md) — full test suite breakdown
 
 ## License
 

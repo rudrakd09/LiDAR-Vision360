@@ -27,6 +27,7 @@ class ConnectionStatusResponse(BaseModel):
     source_id: str | None
     scan_rate_hz: float | None
     dashboard_clients_connected: int
+    session_status: str  # "active" | "stale" | "disconnected" -- see state.compute_session_status
 
 
 class SessionResponse(BaseModel):

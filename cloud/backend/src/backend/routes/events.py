@@ -1,4 +1,4 @@
-"""GET /api/events, GET /api/collision-events, GET /api/clearance-events, GET /api/sessions.
+"""GET /events, GET /collision-events, GET /clearance-events, GET /sessions, GET /sessions/{id}.
 
 Every endpoint here is database-backed (not the in-memory ring buffer) and caps `limit` at
 `Settings.backend_event_max_limit` regardless of what the caller requests -- "do not expose
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 
 from ..config import Settings, get_settings
@@ -27,7 +27,7 @@ from ..models_db import ClearanceEvent, CollisionEvent, SessionRecord
 from ..schemas import ClearanceEventResponse, CollisionEventResponse, SessionResponse
 from ..state import LatestState
 
-router = APIRouter(prefix="/api", tags=["events"])
+router = APIRouter(tags=["events"])
 
 
 def _capped_limit(limit: int | None, settings: Settings) -> int:
@@ -115,6 +115,17 @@ def events(
     return combined[:cap]
 
 
+def _patch_live_session(record: SessionResponse, state: LatestState) -> SessionResponse:
+    """The currently-active session's frame_count/source_id lag in the DB (only written on
+    close) -- patch the live values in from in-memory state so a caller never sees a stale 0 for
+    the session that's actually running right now."""
+    if state.current_session_id is not None and record.id == state.current_session_id:
+        record.frame_count = state.connection.frames_received
+        record.source_id = state.connection.source_id
+        record.scan_rate_hz = state.connection.scan_rate_hz
+    return record
+
+
 @router.get("/sessions", response_model=list[SessionResponse])
 def sessions(
     limit: int | None = Query(default=None, ge=1), db: Database = Depends(get_db), state: LatestState = Depends(get_state),
@@ -124,13 +135,14 @@ def sessions(
     with db.session() as db_session:
         rows = db_session.execute(select(SessionRecord).order_by(SessionRecord.started_at.desc()).limit(cap)).scalars().all()
         results = [SessionResponse.model_validate(r) for r in rows]
+    return [_patch_live_session(r, state) for r in results]
 
-    # The currently-active session's frame_count/source_id lag in the DB (only written on close)
-    # -- patch the live values in from in-memory state so /api/sessions never shows a stale 0.
-    if state.current_session_id is not None:
-        for r in results:
-            if r.id == state.current_session_id:
-                r.frame_count = state.connection.frames_received
-                r.source_id = state.connection.source_id
-                r.scan_rate_hz = state.connection.scan_rate_hz
-    return results
+
+@router.get("/sessions/{session_id}", response_model=SessionResponse)
+def session_detail(session_id: str, db: Database = Depends(get_db), state: LatestState = Depends(get_state)) -> SessionResponse:
+    with db.session() as db_session:
+        record = db_session.get(SessionRecord, session_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Unknown session_id '{session_id}'.")
+        result = SessionResponse.model_validate(record)
+    return _patch_live_session(result, state)

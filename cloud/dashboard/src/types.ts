@@ -126,6 +126,8 @@ export interface PerceptionFrameData {
   points: RawPoint[] | null;
 }
 
+export type SessionStatus = "active" | "stale" | "disconnected";
+
 export interface ConnectionStatus {
   state: "disconnected" | "connecting" | "connected" | "reconnecting";
   host: string;
@@ -138,10 +140,43 @@ export interface ConnectionStatus {
   source_id: string | null;
   scan_rate_hz: number | null;
   dashboard_clients_connected: number;
+  /** "active" | "stale" | "disconnected" -- server-computed (backend.state.compute_session_status),
+   * distinct from `state` (the raw TCP state): a socket can stay "connected" while the bridge has
+   * stalled without closing it. See docs/cloud.md "Session lifecycle". */
+  session_status: SessionStatus;
 }
 
 export interface TrackRosterEntry extends PerceptionObject {
   seconds_since_seen: number;
+  first_seen_at: number | null;
+  last_seen_at: number;
+  frames_tracked: number;
+}
+
+/** GET /api/tracks/{track_id} -- see `backend.state.LatestState.track_summary`. */
+export interface TrackSummary {
+  track_id: string;
+  current: PerceptionObject;
+  first_seen_at: number | null;
+  last_seen_at: number;
+  seconds_since_seen: number;
+  frames_tracked: number;
+  history_length: number;
+}
+
+/** One point of GET /api/tracking-history?track_id=... -- see `LatestState._append_track_history`.
+ * Every field here is copied verbatim from a real `objects[]` entry the perception tracker (Phase
+ * 7) already produced; nothing re-derived. */
+export interface TrackHistoryPoint {
+  frame_id: number | null;
+  timestamp: number | null;
+  x: number | null;
+  y: number | null;
+  vx: number | null;
+  vy: number | null;
+  distance: number | null;
+  classification: string | null;
+  tracking_state: string | null;
 }
 
 export interface CombinedEvent {

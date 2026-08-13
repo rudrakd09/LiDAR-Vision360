@@ -25,6 +25,7 @@ export const REAL_SNAPSHOT_MESSAGE: LiveMessage = {
       source_id: "simulated:08_approaching_obstacle",
       scan_rate_hz: null,
       dashboard_clients_connected: 1,
+      session_status: "active",
     },
     latest_frame: null,
   },
