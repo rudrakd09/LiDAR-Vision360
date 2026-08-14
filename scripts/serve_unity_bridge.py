@@ -50,8 +50,24 @@ logger = get_logger(__name__)
 def run(args: argparse.Namespace, settings: Settings) -> None:
     json_server = PerceptionStreamServer(settings=settings)
     raw_server = RawLidarStreamServer(settings=settings)
-    json_server.start()
-    raw_server.start()
+    try:
+        json_server.start()
+        raw_server.start()
+    except OSError as e:
+        # Most concretely: another `serve_unity_bridge.py` (a previous scenario run that wasn't
+        # actually stopped) is still holding this port -- streaming.server._bind_exclusive makes
+        # that fail loudly here instead of the two silently coexisting and a client connecting to
+        # whichever one the OS happens to route it to. Give a clear, actionable message instead of
+        # a bare traceback -- this is meant to be run interactively/live.
+        logger.error(
+            "[STREAM] Could not start on %s:%d/%d -- %s. Is another `serve_unity_bridge.py` "
+            "already running? Stop it first (Ctrl+C in its terminal, or on Windows: "
+            "`Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object "
+            "{ $_.CommandLine -match 'serve_unity_bridge' } | ForEach-Object { Stop-Process -Id "
+            "$_.ProcessId -Force }`) before starting a new scenario.",
+            settings.streaming_host, settings.streaming_json_port, settings.streaming_raw_port, e,
+        )
+        raise SystemExit(1) from e
 
     preprocessor = Preprocessor()
     transformer = CoordinateTransformer()

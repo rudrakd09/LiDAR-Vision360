@@ -30,6 +30,22 @@ class ConnectionStatusResponse(BaseModel):
     session_status: str  # "active" | "stale" | "disconnected" -- see state.compute_session_status
 
 
+class StreamStatusResponse(BaseModel):
+    """`GET /debug/stream-status` -- see routes/debug.py's own docstring for what each field means
+    and why it's not just a duplicate of `ConnectionStatusResponse`."""
+
+    connected: bool
+    last_frame_id: int | None
+    last_frame_timestamp: float | None
+    frames_received: int
+    frames_dropped: int
+    source_id: str | None
+    age_ms: float | None
+    risk: str | None
+    object_count: int
+    track_count: int
+
+
 class SessionResponse(BaseModel):
     id: str
     source_id: str | None

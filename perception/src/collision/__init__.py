@@ -13,14 +13,23 @@ Typical usage:
     from collision import CollisionRiskEngine
     from models.collision import VehicleState
 
-    engine = CollisionRiskEngine()  # reads defaults from common.config.Settings; stateless
+    engine = CollisionRiskEngine()  # reads defaults from common.config.Settings
     assessment = engine.evaluate(tracked_scan, vehicle_state=VehicleState(speed_mps=5.0))
 
     print(assessment.overall_risk, assessment.most_critical_object)
+
+`assess_risk` (the Phase 9 rule cascade) remains a pure, memoryless function of one scan's
+distance/TTC -- unchanged. `CollisionRiskEngine` itself now holds a small amount of *additional*
+state on top of that (a per-track_id "last accepted risk level", see `.hysteresis`) purely to
+debounce it at scan rate: reuse the same engine instance across an entire run (already the
+existing convention -- `scripts/serve_unity_bridge.py` constructs one `CollisionRiskEngine()` for
+its whole streaming loop) to get hysteresis; construct a fresh instance (or call `assess_risk`
+directly) for a one-shot/stateless assessment.
 """
 
 from .engine import CollisionRiskEngine
 from .geometry import in_projected_path, relative_motion, vehicle_footprint
+from .hysteresis import RISK_SEVERITY, resolve_risk_with_hysteresis
 from .metrics import collision_prediction_accuracy, risk_level_accuracy, ttc_error
 from .prediction import simulate_collision
 from .risk import assess_risk, risk_score
@@ -36,6 +45,8 @@ __all__ = [
     "simulate_collision",
     "assess_risk",
     "risk_score",
+    "resolve_risk_with_hysteresis",
+    "RISK_SEVERITY",
     "collision_prediction_accuracy",
     "ttc_error",
     "risk_level_accuracy",

@@ -43,7 +43,7 @@ export function TrackedObjectsTable({
   }
 
   return (
-    <section className="panel">
+    <section className="panel" data-testid="tracked-objects-table">
       <p className="panel-title">Tracked Objects</p>
       {objects.length === 0 ? (
         <div className="empty-state">No objects currently tracked</div>
@@ -51,10 +51,13 @@ export function TrackedObjectsTable({
         <table className="objects-table">
           <thead>
             <tr>
-              <th>ID</th>
-              <th>Object</th>
+              <th>Track ID</th>
+              <th>Classification</th>
               <th>Distance</th>
+              <th>X</th>
+              <th>Y</th>
               <th>Velocity</th>
+              <th>Confidence</th>
               <th>TTC</th>
               <th>Risk</th>
               <th>Collision</th>
@@ -69,11 +72,16 @@ export function TrackedObjectsTable({
               const isExpanded = expandedTrackId === obj.track_id;
               return (
                 <Fragment key={obj.track_id}>
-                  <tr onClick={() => toggleHistory(obj.track_id)} style={{ cursor: "pointer" }} title="Click for trajectory history">
+                  <tr onClick={() => toggleHistory(obj.track_id)} style={{ cursor: "pointer" }} title="Click for trajectory history + shape detail">
                     <td>#{obj.track_id}</td>
                     <td>{obj.classification.replace(/_/g, " ")}</td>
                     <td>{obj.distance.toFixed(1)} m</td>
+                    <td>{obj.centroid.x.toFixed(2)}</td>
+                    <td>{obj.centroid.y.toFixed(2)}</td>
                     <td>{speed != null ? `${speed.toFixed(1)} m/s` : "—"}</td>
+                    {/* Only shown when the classifier actually produced a confidence score --
+                        never fabricated for a 0-confidence/absent case. */}
+                    <td>{obj.confidence != null ? `${(obj.confidence * 100).toFixed(0)}%` : "—"}</td>
                     <td>{result?.ttc != null ? `${result.ttc.toFixed(1)} s` : "N/A"}</td>
                     <td>{result ? <span className={`badge risk-${result.risk_level}`}>{result.risk_level}</span> : "—"}</td>
                     <td>{result?.collision_predicted ? "YES" : "no"}</td>
@@ -81,7 +89,8 @@ export function TrackedObjectsTable({
                   </tr>
                   {isExpanded && (
                     <tr>
-                      <td colSpan={8}>
+                      <td colSpan={11}>
+                        <ShapeDetail obj={obj} />
                         <TrackHistoryPanel loading={historyLoading} history={history} frameCount={book?.framesTracked} />
                       </td>
                     </tr>
@@ -93,6 +102,41 @@ export function TrackedObjectsTable({
         </table>
       )}
     </section>
+  );
+}
+
+/** Object-identification-by-shape detail -- the real geometric features the existing classifier
+ * (`objects.classifier.GeometricClassifier`) already computed for this object, exposed as-is (no
+ * second classifier, no re-derivation). Height isn't shown -- this is a 2D LiDAR, there's no such
+ * field anywhere in the pipeline, and fabricating one would violate "no fabricated fields." */
+function ShapeDetail({ obj }: { obj: PerceptionObject }) {
+  return (
+    <div className="summary-row" style={{ marginBottom: 10 }}>
+      <div className="summary-item">
+        <div className="summary-label">Classification</div>
+        <div className="summary-value">{obj.classification.replace(/_/g, " ")}</div>
+      </div>
+      <div className="summary-item">
+        <div className="summary-label">Width</div>
+        <div className="summary-value">{obj.width.toFixed(2)} m</div>
+      </div>
+      <div className="summary-item">
+        <div className="summary-label">Length (depth)</div>
+        <div className="summary-value">{obj.depth.toFixed(2)} m</div>
+      </div>
+      <div className="summary-item">
+        <div className="summary-label">Point Count</div>
+        <div className="summary-value">{obj.point_count ?? "—"}</div>
+      </div>
+      <div className="summary-item">
+        <div className="summary-label">Aspect Ratio</div>
+        <div className="summary-value">{obj.aspect_ratio != null ? obj.aspect_ratio.toFixed(2) : "—"}</div>
+      </div>
+      <div className="summary-item">
+        <div className="summary-label">Confidence</div>
+        <div className="summary-value">{obj.confidence != null ? `${(obj.confidence * 100).toFixed(0)}%` : "—"}</div>
+      </div>
+    </div>
   );
 }
 

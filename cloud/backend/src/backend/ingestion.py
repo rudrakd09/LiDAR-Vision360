@@ -75,6 +75,25 @@ class PerceptionIngestor:
                 self.state.connection.state = "connected"
                 self.state.connection.connected_at = time.time()
                 logger.info("[INGEST] Connected to %s:%d.", self.settings.streaming_host, self.settings.streaming_json_port)
+                # A fresh TCP connection means a fresh producer on the other end (a brand new
+                # `scripts/serve_unity_bridge.py` run -- a different scenario, or the same one
+                # restarted) -- its `frame_id`/`sequence_number` sequence starts back at 0
+                # (`datasources.simulated.SimulatedDataSource.__init__`), completely unrelated to
+                # whatever frame_id the *previous* producer last reached. Carrying
+                # `_last_accepted_frame_id` over from that previous connection would make
+                # `classify_frame_id` see every one of this new producer's frames as
+                # OUT_OF_ORDER (new_frame_id < stale last_frame_id) and silently drop them in
+                # `_handle_frame` -- `state.record_frame` (and therefore `latest_frame`/
+                # `source_id`/objects/risk/clearance -- everything the dashboard reads) would
+                # then stay frozen on the old producer's last frame until the new one's counter
+                # happened to climb back past the old high-water mark -- exactly the reported
+                # "dashboard shows stale data from the previous scenario after switching bridge
+                # runs" bug this fixes. `_last_risk_level`/`_last_clearance_status` reset alongside
+                # it for the same reason: an event transition should be judged against this
+                # session's own prior state, not a different producer's.
+                self._last_accepted_frame_id = None
+                self._last_risk_level = None
+                self._last_clearance_status = None
                 self._open_session()
 
                 framer = MessageFramer()

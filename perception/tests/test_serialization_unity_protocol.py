@@ -9,14 +9,24 @@ import pytest
 from models.clearance import ClearanceAssessment, ClearanceDirection, ClearanceState, DirectionalClearance
 from models.collision import CollisionAssessment, CollisionRiskResult, RiskLevel, VehicleState
 from models.mapping import CellState, OccupancyGrid, VehiclePose
-from models.objects import DetectedObject, MovementState, ObjectClassification, Point2D, TrackingState, Velocity2D
+from models.objects import DetectedObject, MovementState, ObjectClassification, Point2D, ShapeFeatures, TrackingState, Velocity2D
 from models.tracking import TrackedScan
 from common.config import Settings
 from serialization import build_clearance_payload, build_config_payload, build_frame_message, pack_occupancy_grid
 from serialization.unity_protocol import build_object_payload, build_risk_payload, build_vehicle_payload
 
 
-def _object(track_id="track-1", has_velocity=True) -> DetectedObject:
+def _shape_features(aspect_ratio=2.5) -> ShapeFeatures:
+    return ShapeFeatures(
+        point_count=12, width=1.8, depth=0.72, aspect_ratio=aspect_ratio,
+        min_distance=4.6, max_distance=5.6, centroid_distance=5.1,
+        min_angle=10.0, max_angle=20.0, angular_width=10.0,
+        mean_distance=5.1, distance_variance=0.02, spatial_variance=0.05, point_density=10.0,
+        linearity_score=0.8, circularity_score=0.1,
+    )
+
+
+def _object(track_id="track-1", has_velocity=True, point_count=None, shape_features=None) -> DetectedObject:
     return DetectedObject(
         object_id=track_id, track_id=track_id, centroid=Point2D(x=5.0, y=1.0), width=1.8, depth=1.8,
         distance=5.1, classification=ObjectClassification.VEHICLE_LIKE, confidence=0.8642,
@@ -24,6 +34,7 @@ def _object(track_id="track-1", has_velocity=True) -> DetectedObject:
         predicted_position=Point2D(x=4.85, y=1.0) if has_velocity else None,
         tracking_state=TrackingState.CONFIRMED, movement_state=MovementState.MOVING if has_velocity else MovementState.UNKNOWN,
         track_age=10, track_hits=10, track_misses=0, timestamp=1000.0,
+        point_count=point_count, shape_features=shape_features,
     )
 
 
@@ -101,6 +112,16 @@ class TestBuildObjectPayload:
         payload = build_object_payload(_object())
         assert "shape_features" not in payload
         assert "classification_reason" not in payload
+
+    def test_point_count_and_aspect_ratio_included_when_available(self):
+        payload = build_object_payload(_object(point_count=12, shape_features=_shape_features(aspect_ratio=2.5)))
+        assert payload["point_count"] == 12
+        assert payload["aspect_ratio"] == 2.5
+
+    def test_point_count_and_aspect_ratio_null_when_not_populated(self):
+        payload = build_object_payload(_object())  # no point_count/shape_features passed
+        assert payload["point_count"] is None
+        assert payload["aspect_ratio"] is None
 
 
 class TestBuildRiskPayload:

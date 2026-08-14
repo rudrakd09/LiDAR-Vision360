@@ -7,11 +7,11 @@
  * stale-render bug would all show up here, deterministically, without needing to race a live
  * browser against a 10Hz stream.
  */
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { MockWebSocket } from "./test/mockWebSocket";
-import { REAL_CRITICAL_FRAME_MESSAGE, REAL_NEXT_CRITICAL_FRAME_MESSAGE, REAL_SNAPSHOT_MESSAGE } from "./test/fixtures";
+import { REAL_CRITICAL_FRAME_MESSAGE, REAL_NEXT_CRITICAL_FRAME_MESSAGE, REAL_SCENARIO_SWITCH_FRAME_MESSAGE, REAL_SNAPSHOT_MESSAGE } from "./test/fixtures";
 
 beforeEach(() => {
   MockWebSocket.reset();
@@ -36,7 +36,9 @@ describe("App renders real live data, not stale/hard-coded values", () => {
     const riskTile = screen.getByText("Risk").closest(".stat-tile");
     expect(riskTile!.textContent).toContain("—"); // no risk claimed before any frame arrives
     expect(screen.getByText("N/A")).toBeInTheDocument(); // TTC tile
-    expect(screen.getByText("No objects currently tracked")).toBeInTheDocument();
+    // Both the Tracked Objects table AND the Tracking History panel legitimately show this same
+    // empty-state message before any frame has arrived -- assert both, not just "at least one".
+    expect(within(screen.getByTestId("tracked-objects-table")).getByText("No objects currently tracked")).toBeInTheDocument();
   });
 
   it("shows CRITICAL risk once a real critical-risk frame arrives over the socket", async () => {
@@ -69,8 +71,9 @@ describe("App renders real live data, not stale/hard-coded values", () => {
     act(() => socket.emitOpen());
     act(() => socket.emitMessage(REAL_CRITICAL_FRAME_MESSAGE));
 
-    await waitFor(() => expect(screen.getByText("#track-1")).toBeInTheDocument());
-    expect(screen.queryByText("No objects currently tracked")).not.toBeInTheDocument();
+    const objectsTable = screen.getByTestId("tracked-objects-table");
+    await waitFor(() => expect(within(objectsTable).getByText("#track-1")).toBeInTheDocument());
+    expect(within(objectsTable).queryByText("No objects currently tracked")).not.toBeInTheDocument();
     // OBJECTS stat tile: from StatTiles, driven by frame.objects.length -- must read 1, not 0.
     const objectsTile = screen.getByText("Objects").closest(".stat-tile");
     expect(objectsTile).not.toBeNull();
@@ -147,6 +150,128 @@ describe("App renders real live data, not stale/hard-coded values", () => {
   });
 });
 
+describe("Live Perception Frame panel shows the real current frame, changing every frame", () => {
+  it("shows frame_id/source/timestamp from the real frame, and STREAM: LIVE once it arrives", async () => {
+    render(<App />);
+    const socket = MockWebSocket.latest();
+    act(() => socket.emitOpen());
+    act(() => socket.emitMessage(REAL_CRITICAL_FRAME_MESSAGE));
+
+    await waitFor(() => expect(screen.getByText("#13")).toBeInTheDocument()); // Frame ID tile
+    expect(screen.getByText("simulated:08_approaching_obstacle")).toBeInTheDocument(); // Source tile
+    expect(screen.getByText("LIVE")).toBeInTheDocument(); // Stream tile
+  });
+
+  it("frame_id visibly changes when a newer frame arrives -- not stuck on the first one", async () => {
+    render(<App />);
+    const socket = MockWebSocket.latest();
+    act(() => socket.emitOpen());
+    act(() => socket.emitMessage(REAL_CRITICAL_FRAME_MESSAGE));
+    await waitFor(() => expect(screen.getByText("#13")).toBeInTheDocument());
+
+    act(() => socket.emitMessage(REAL_NEXT_CRITICAL_FRAME_MESSAGE));
+    await waitFor(() => expect(screen.getByText("#14")).toBeInTheDocument());
+    expect(screen.queryByText("#13")).not.toBeInTheDocument();
+  });
+});
+
+describe("Tracked Objects table shows X/Y/Confidence from the real frame", () => {
+  it("renders centroid x/y and confidence, not fabricated placeholders", async () => {
+    render(<App />);
+    const socket = MockWebSocket.latest();
+    act(() => socket.emitOpen());
+    act(() => socket.emitMessage(REAL_CRITICAL_FRAME_MESSAGE));
+
+    const objectsTable = screen.getByTestId("tracked-objects-table");
+    await waitFor(() => expect(within(objectsTable).getByText("#track-1")).toBeInTheDocument());
+    // Real captured values: centroid { x: 5.1547, y: 0.0002 }, confidence: 1.0
+    expect(within(objectsTable).getByText("5.15")).toBeInTheDocument();
+    expect(within(objectsTable).getByText("0.00")).toBeInTheDocument();
+    expect(within(objectsTable).getByText("100%")).toBeInTheDocument();
+  });
+});
+
+describe("Tracking History panel builds a real per-track trajectory from live frames", () => {
+  it("shows the current position moving as newer frames replace older ones for the same track", async () => {
+    render(<App />);
+    const socket = MockWebSocket.latest();
+    act(() => socket.emitOpen());
+    act(() => socket.emitMessage(REAL_CRITICAL_FRAME_MESSAGE)); // track-1 at x=5.1547
+
+    const historyPanel = screen.getByTestId("tracking-history-panel");
+    await waitFor(() => expect(within(historyPanel).getByText(/x=5\.15/)).toBeInTheDocument());
+
+    act(() => socket.emitMessage(REAL_NEXT_CRITICAL_FRAME_MESSAGE)); // same track-1, x=4.9548
+    await waitFor(() => expect(within(historyPanel).getByText(/x=4\.95/)).toBeInTheDocument());
+    // The panel now has two recorded points for the same track -- previous position is the first one.
+    expect(within(historyPanel).getByText(/x=5\.15/)).toBeInTheDocument(); // still shown as "Previous Position"
+  });
+
+  it("regression: switching source_id resets trajectories -- a reused track_id does not splice the old scenario's points onto the new one", async () => {
+    render(<App />);
+    const socket = MockWebSocket.latest();
+    act(() => socket.emitOpen());
+    // Scenario A (08_approaching_obstacle): track-1 at x=5.1547.
+    act(() => socket.emitMessage(REAL_CRITICAL_FRAME_MESSAGE));
+    const historyPanel = screen.getByTestId("tracking-history-panel");
+    await waitFor(() => expect(within(historyPanel).getByText(/x=5\.15/)).toBeInTheDocument());
+
+    // Scenario B (05_multiple_obstacles): a DIFFERENT producer's own track-1 (reused id) at a
+    // completely different position (x=9.0), plus a second object (track-9) 08_* never had.
+    act(() => socket.emitMessage(REAL_SCENARIO_SWITCH_FRAME_MESSAGE));
+    await waitFor(() => expect(within(historyPanel).getByText(/x=9\.00/)).toBeInTheDocument());
+
+    // The old scenario's point must be gone, not sitting alongside as a fabricated "previous
+    // position" for a track that has nothing to do with it.
+    expect(within(historyPanel).queryByText(/x=5\.15/)).not.toBeInTheDocument();
+    // Only one recorded frame so far for the new scenario's track-1 -- no "Previous Position"
+    // carried over from the old producer.
+    expect(within(historyPanel).getByText("—", { exact: true })).toBeInTheDocument();
+  });
+
+  it("regression: switching source_id removes tracks that don't exist in the new scenario from the selector -- no stale ids linger", async () => {
+    render(<App />);
+    const socket = MockWebSocket.latest();
+    act(() => socket.emitOpen());
+    // Scenario A has only track-1.
+    act(() => socket.emitMessage(REAL_CRITICAL_FRAME_MESSAGE));
+    const historyPanel = screen.getByTestId("tracking-history-panel");
+    await waitFor(() => expect(within(historyPanel).getByText("#track-1")).toBeInTheDocument());
+
+    // Scenario B has track-1 (reused id) AND track-9 -- track-9 never existed under Scenario A.
+    act(() => socket.emitMessage(REAL_SCENARIO_SWITCH_FRAME_MESSAGE));
+    await waitFor(() => expect(within(historyPanel).getByText("#track-9")).toBeInTheDocument());
+    // Only Scenario B's two tracks are selectable -- nothing left over from Scenario A that
+    // Scenario B doesn't also have.
+    expect(within(historyPanel).getAllByRole("option")).toHaveLength(2);
+  });
+});
+
+describe("Debug Data panel cross-checks backend/perception truth against a real GET /debug/stream-status", () => {
+  it("fetches and renders the real stream status fields", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/debug/stream-status")) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            connected: true, last_frame_id: 99, last_frame_timestamp: 1786602527.0,
+            frames_received: 100, frames_dropped: 3, source_id: "simulated:08_approaching_obstacle",
+            age_ms: 42.0, risk: "critical", object_count: 1, track_count: 1,
+          }),
+        } as Response;
+      }
+      return { ok: true, status: 200, json: async () => [] } as Response; // EventTimeline's own poll
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await waitFor(() => expect(fetchMock.mock.calls.some((c) => (c[0] as string).includes("/debug/stream-status"))).toBe(true));
+    await waitFor(() => expect(screen.getByText("99")).toBeInTheDocument()); // Latest Frame ID
+    expect(screen.getByText("3")).toBeInTheDocument(); // Frames Dropped
+    expect(screen.getByText("42 ms")).toBeInTheDocument(); // Frame Age
+  });
+});
+
 describe("Status badges reflect real connection/session facts, not just 'is the socket open'", () => {
   it("Backend badge is CONNECTED once the dashboard's own socket opens", async () => {
     render(<App />);
@@ -217,6 +342,20 @@ describe("Status badges reflect real connection/session facts, not just 'is the 
     await waitFor(() => expect(screen.getByText(/Bridge: DISCONNECTED/)).toBeInTheDocument(), { timeout: 3000 });
     expect(statusMock.mock.calls.length).toBeGreaterThanOrEqual(2); // proves it actually polled again, not a one-shot
   });
+
+  it("regression: the Scenario label switches on the very next frame -- does not wait for the 2s /api/status poll", async () => {
+    // No /api/status stub configured to resolve here -- if the label depended on that poll, it
+    // would still show the previous scenario (or fail outright) within this test's timeframe.
+    render(<App />);
+    const socket = MockWebSocket.latest();
+    act(() => socket.emitOpen());
+    act(() => socket.emitMessage(REAL_CRITICAL_FRAME_MESSAGE)); // simulated:08_approaching_obstacle
+    await waitFor(() => expect(screen.getByText(/Scenario: simulated:08_approaching_obstacle/)).toBeInTheDocument());
+
+    act(() => socket.emitMessage(REAL_SCENARIO_SWITCH_FRAME_MESSAGE)); // simulated:05_multiple_obstacles
+    await waitFor(() => expect(screen.getByText(/Scenario: simulated:05_multiple_obstacles/)).toBeInTheDocument());
+    expect(screen.queryByText(/Scenario: simulated:08_approaching_obstacle/)).not.toBeInTheDocument();
+  });
 });
 
 describe("Tracking history (Part 5 -- real per-track history, not a static list)", () => {
@@ -243,11 +382,12 @@ describe("Tracking history (Part 5 -- real per-track history, not a static list)
     const socket = MockWebSocket.latest();
     act(() => socket.emitOpen());
     act(() => socket.emitMessage(REAL_CRITICAL_FRAME_MESSAGE));
-    await waitFor(() => expect(screen.getByText("#track-1")).toBeInTheDocument());
+    const objectsTable = screen.getByTestId("tracked-objects-table");
+    await waitFor(() => expect(within(objectsTable).getByText("#track-1")).toBeInTheDocument());
 
     const { default: userEvent } = await import("@testing-library/user-event");
     const user = userEvent.setup();
-    await user.click(screen.getByText("#track-1"));
+    await user.click(within(objectsTable).getByText("#track-1"));
 
     // EventTimeline also polls /api/events independently -- find the tracking-history call
     // specifically rather than assuming it's the first (or only) fetch this render triggers.

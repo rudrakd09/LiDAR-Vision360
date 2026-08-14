@@ -74,6 +74,96 @@ class TestLatestObjectsTracks:
         assert resp.json()[0]["classification"] == "wall"
 
 
+class TestDebugEndpoints:
+    def test_live_frame_is_null_when_nothing_received(self, client):
+        resp = client.get("/debug/live-frame")
+        assert resp.status_code == 200
+        assert resp.json() is None
+
+    def test_live_frame_reflects_seeded_state(self, client):
+        state = client.app.state.latest_state
+        state.connection.state = "connected"  # debug_live_frame only reports data while actually connected
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None, "timestamp": 123.0}, frame_id=7)
+        resp = client.get("/debug/live-frame")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["objects"][0]["track_id"] == "t1"
+        assert body["timestamp"] == 123.0
+
+    def test_live_frame_is_null_while_disconnected_even_with_a_cached_frame(self, client):
+        """Regression test for a real repro: after a producer disconnects (e.g. switching
+        scenarios -- the old bridge process stopped, the new one not yet accepted),
+        `state.latest_frame` still holds the *previous* producer's last frame (by design, for
+        `GET /latest`/`/ws/live`'s own dashboard-facing contract -- see LatestState's own
+        docstring) -- but `/debug/live-frame`, read in isolation, must not hand that back as if it
+        were the current live answer. `objects: []` on that stale cached frame (as in this test)
+        is exactly the case that was previously indistinguishable from "the current scenario
+        genuinely has no objects"."""
+        state = client.app.state.latest_state
+        state.connection.state = "connected"
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None, "timestamp": 123.0, "source_id": "simulated:previous_scenario"}, frame_id=7)
+        assert client.get("/debug/live-frame").json()["objects"]  # sanity: it does report data while connected
+
+        state.connection.state = "reconnecting"  # producer dropped -- state.latest_frame is untouched (still the stale frame)
+        resp = client.get("/debug/live-frame")
+        assert resp.status_code == 200
+        assert resp.json() is None
+
+    def test_status_endpoint_still_reports_the_stale_frame_alongside_connected_false(self, client):
+        """`GET /latest` (dashboard-facing, unlike /debug/live-frame) intentionally keeps its own
+        contract unchanged -- it's paired with `connection.session_status`/client-side staleness
+        checking elsewhere, not meant to go null on every disconnect blip."""
+        state = client.app.state.latest_state
+        state.connection.state = "connected"
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None, "timestamp": 123.0}, frame_id=7)
+        state.connection.state = "reconnecting"
+        resp = client.get("/api/latest")
+        assert resp.status_code == 200
+        assert resp.json()["objects"][0]["track_id"] == "t1"  # unchanged, deliberately
+
+    def test_stream_status_before_any_frame(self, client):
+        resp = client.get("/debug/stream-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["connected"] is False
+        assert body["last_frame_id"] is None
+        assert body["frames_received"] == 0
+        assert body["frames_dropped"] == 0
+        assert body["object_count"] == 0
+        assert body["track_count"] == 0
+        assert body["risk"] is None
+        assert body["age_ms"] is None
+
+    def test_stream_status_reflects_seeded_frame(self, client):
+        state = client.app.state.latest_state
+        state.connection.state = "connected"
+        state.connection.source_id = "simulated:test"  # normally set by PerceptionIngestor._handle_frame
+        state.record_frame(
+            {
+                "objects": [{"track_id": "t1", "classification": "vehicle_like"}, {"track_id": "t2", "classification": "wall"}],
+                "risk": {"overall_risk": "critical", "most_critical": None, "results": []},
+                "clearance": None, "timestamp": 555.0, "source_id": "simulated:test",
+            },
+            frame_id=42,
+        )
+        resp = client.get("/debug/stream-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["connected"] is True
+        assert body["last_frame_id"] == 42
+        assert body["last_frame_timestamp"] == 555.0
+        assert body["frames_received"] == 1
+        assert body["source_id"] == "simulated:test"
+        assert body["risk"] == "critical"
+        assert body["object_count"] == 2
+        assert body["age_ms"] is not None and body["age_ms"] >= 0
+
+    def test_api_prefixed_debug_routes_also_exist(self, client):
+        # Same double-mount convention every other route module gets (see main.py's own comment).
+        assert client.get("/api/debug/live-frame").status_code == 200
+        assert client.get("/api/debug/stream-status").status_code == 200
+
+
 class TestEventsAndSessionsEmpty:
     def test_collision_events_empty_list(self, client):
         resp = client.get("/api/collision-events")

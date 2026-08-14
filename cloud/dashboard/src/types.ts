@@ -32,6 +32,14 @@ export interface PerceptionObject {
   track_age: number | null;
   track_hits: number | null;
   track_misses: number | null;
+  /** Real geometric features the classifier already computed (`objects.features.extract_features`
+   * / `DetectedObject.point_count`/`shape_features.aspect_ratio`) -- `null` when the source object
+   * genuinely didn't have them, and optional (`?`) rather than required so older captured/test
+   * payloads (from before these two fields were added to the wire protocol) still type-check
+   * without being rewritten -- the live backend always sends the key, older fixtures just predate
+   * it. */
+  point_count?: number | null;
+  aspect_ratio?: number | null;
 }
 
 export interface CollisionResult {
@@ -186,6 +194,22 @@ export interface CombinedEvent {
   timestamp: number;
   summary: string;
   detail: Record<string, unknown>;
+}
+
+/** GET /debug/stream-status -- see `backend.routes.debug`. Purely a diagnostic/demo cross-check
+ * ("is the problem backend/WebSocket/frontend/perception") -- the dashboard's own live rendering
+ * never depends on this; that's `/ws/live`'s job. */
+export interface StreamStatus {
+  connected: boolean;
+  last_frame_id: number | null;
+  last_frame_timestamp: number | null;
+  frames_received: number;
+  frames_dropped: number;
+  source_id: string | null;
+  age_ms: number | null;
+  risk: string | null;
+  object_count: number;
+  track_count: number;
 }
 
 export interface SessionRecord {

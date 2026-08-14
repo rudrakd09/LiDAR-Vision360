@@ -198,6 +198,79 @@ class TestSourceIdFromFrameData:
         server_thread.join(timeout=3)
 
 
+def _frame_message_with_source(frame_id: int, source_id: str, risk_level: str = "safe") -> dict:
+    msg = _frame_message(frame_id, risk_level)
+    msg["data"]["source_id"] = source_id
+    return msg
+
+
+class TestReconnectToNewProducerResetsFrameIdTracking:
+    """Regression test for the "dashboard stuck on the previous scenario" bug: every new TCP
+    connection is a brand new producer (a fresh `scripts/serve_unity_bridge.py` run -- a
+    different scenario, or the same one restarted after a crash), whose own `frame_id`/
+    `sequence_number` sequence always starts back at 0 (`datasources.simulated.
+    SimulatedDataSource.__init__`), completely unrelated to whatever frame_id the *previous*
+    connection's producer last reached. `_last_accepted_frame_id` (and `_last_risk_level`/
+    `_last_clearance_status`) must be reset on every fresh connection -- otherwise
+    `classify_frame_id` sees the new producer's low frame_ids as OUT_OF_ORDER against the old
+    high-water mark and `_handle_frame` silently drops every one of them, leaving
+    `state.latest_frame`/`source_id` frozen on the old producer's last frame forever (or until the
+    new producer's counter happens to climb back past the old one)."""
+
+    def test_new_connection_with_lower_frame_ids_is_not_dropped_as_out_of_order(self, db, event_loop_for_ingestor):
+        port_holder, ready = [], threading.Event()
+
+        def _two_producers_in_sequence(port_holder, ready_event):
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", 0))
+            port_holder.append(srv.getsockname()[1])
+            srv.listen(1)
+            ready_event.set()
+
+            # First "bridge run": frame_ids climb well past what a fresh run would start at.
+            conn, _ = srv.accept()
+            for fid in (500, 501, 502):
+                conn.sendall(_encode(_frame_message_with_source(fid, "simulated:scenario_a")))
+                time.sleep(0.02)
+            conn.close()  # simulates the first bridge process being stopped
+
+            # Second "bridge run" (a different scenario): brand new process, frame_ids restart at 0.
+            conn2, _ = srv.accept()
+            for fid in (0, 1, 2):
+                conn2.sendall(_encode(_frame_message_with_source(fid, "simulated:scenario_b")))
+                time.sleep(0.02)
+            time.sleep(0.3)
+            conn2.close()
+            srv.close()
+
+        server_thread = threading.Thread(target=_two_producers_in_sequence, args=(port_holder, ready), daemon=True)
+        server_thread.start()
+        ready.wait(timeout=3)
+
+        settings = Settings(_env_file=None, streaming_host="127.0.0.1", streaming_json_port=port_holder[0], streaming_reconnect_interval_s=0.2)
+        state = LatestState(ring_buffer_size=50, track_grace_period_s=2.0)
+        hub = LiveBroadcastHub()
+        ingestor = PerceptionIngestor(settings, state, db, hub, event_loop_for_ingestor)
+        ingestor.start()
+
+        deadline = time.time() + 6
+        while time.time() < deadline and state.connection.frames_received < 6:
+            time.sleep(0.05)
+
+        assert state.connection.source_id == "simulated:scenario_b", (
+            "backend stayed stuck on the previous producer's source_id -- the new (lower) "
+            "frame_ids from the second connection were dropped as out-of-order"
+        )
+        assert state.connection.last_frame_id == 2
+        assert state.latest_frame["objects"][0]["track_id"] == "t1"
+        # None of the second producer's 3 frames should have been misclassified as out-of-order.
+        assert state.connection.duplicate_or_out_of_order_dropped == 0
+
+        ingestor.stop()
+        server_thread.join(timeout=3)
+
+
 class TestIngestionSurvivesBadMessages:
     """Regression test for the silent-thread-death bug: a message that causes an exception deep
     in dispatch (e.g. a field with an unexpected type) must be logged and skipped, not kill the

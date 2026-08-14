@@ -2,7 +2,7 @@
  * REST fetch helpers -- talks to the local cloud backend (`cloud/backend`, default
  * `http://localhost:8000`, overridable via `VITE_API_BASE_URL` for a non-default port/host).
  */
-import type { CombinedEvent, ConnectionStatus, PerceptionFrameData, PerceptionObject, SessionRecord, TrackHistoryPoint, TrackRosterEntry, TrackSummary } from "../types";
+import type { CombinedEvent, ConnectionStatus, PerceptionFrameData, PerceptionObject, SessionRecord, StreamStatus, TrackHistoryPoint, TrackRosterEntry, TrackSummary } from "../types";
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 
@@ -23,6 +23,12 @@ export const api = {
   trackHistory: (trackId: string, limit = 50) => getJson<TrackHistoryPoint[]>(`/api/tracking-history?track_id=${encodeURIComponent(trackId)}&limit=${limit}`),
   events: (limit = 50) => getJson<CombinedEvent[]>(`/api/events?limit=${limit}`),
   sessions: (limit = 20) => getJson<SessionRecord[]>(`/api/sessions?limit=${limit}`),
+  /** Debug/demo-only cross-check endpoints -- see `backend.routes.debug`. Not part of the
+   * primary live data path (that's `/ws/live`); used only by the dashboard's own Debug Data
+   * panel, on the same modest polling cadence as the other supplementary REST refreshes
+   * (`useLiveSocket`'s `/api/status` poll, `EventTimeline`'s `/api/events` poll). */
+  debugStreamStatus: () => getJson<StreamStatus>("/debug/stream-status"),
+  debugLiveFrame: () => getJson<PerceptionFrameData>("/debug/live-frame"),
 };
 
 export function wsUrl(): string {

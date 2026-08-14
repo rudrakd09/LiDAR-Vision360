@@ -129,6 +129,8 @@ written against) also works.
 | `GET /sessions?limit=N` | ingested-connection history |
 | `GET /sessions/{session_id}` | one session's detail (404 if unknown) |
 | `GET /metrics` | real, already-tracked counters only (frames received/dropped, active tracks, ring buffer usage, uptime, `session_status`) -- no fabricated throughput/rate figures this backend doesn't actually measure |
+| `GET /debug/live-frame` | the exact latest frame (same dict `/latest` and every `/ws/live` "frame" carry); `null` if none yet -- demo/diagnostic convenience, see `routes/debug.py` |
+| `GET /debug/stream-status` | denser single-call diagnostic summary: `connected`, `last_frame_id`, `last_frame_timestamp`, `frames_received`, `frames_dropped`, `source_id`, `age_ms`, `risk`, `object_count`, `track_count` |
 | `GET /docs`, `GET /redoc` | FastAPI's own Swagger UI / ReDoc, automatic |
 | `WS /ws/live` | `{type: "snapshot"\|"frame"\|"heartbeat"\|"status"\|"error", ...}` push stream |
 
@@ -137,9 +139,19 @@ written against) also works.
 Tries `Settings.database_url` (PostgreSQL by default) first; on any connection failure at startup
 (no local server, wrong credentials, driver not installed), falls back to a local SQLite file at
 `Settings.backend_sqlite_fallback_path` (`cloud/backend/data/lidar_vision360.db`) and logs a
-warning rather than failing to start -- see `backend.db.resolve_database_url`. No local PostgreSQL
-was installed in the environment this was built in, so the SQLite fallback is what actually runs
-by default; both paths use the same synchronous SQLAlchemy engine and the same ORM models.
+warning rather than failing to start -- see `backend.db.resolve_database_url`. Both paths use the
+same synchronous SQLAlchemy engine and the same ORM models -- the live dashboard's real-time state
+never depends on which one is active (that's `state.LatestState`, in-memory, fed by `/ws/live`);
+only session/event history persistence does.
+
+`psycopg2-binary` is installed in this project's `.venv` (`cloud/backend`'s own `postgres` extra),
+so a reachable PostgreSQL server at `Settings.database_url` would be used automatically. As of this
+writing the demo intentionally runs on the SQLite fallback (a real local PostgreSQL server exists
+on this machine but not yet provisioned with the `lidar`/`lidar_vision360` role+database this
+project's default URL expects) -- a deliberate choice to keep effort on the live dashboard data
+path, not a driver/capability gap. To switch: create the role/database (or point
+`LIDAR_DATABASE_URL` at existing ones) and restart the backend; `resolve_database_url` picks it up
+with no code change.
 
 ## API
 
@@ -161,6 +173,19 @@ by default; both paths use the same synchronous SQLAlchemy engine and the same O
 `cloud/dashboard` (React + TypeScript + Vite) -- connects to `/ws/live` for real-time updates and
 `/api/*` for its initial/on-demand loads. No hard-coded values; every panel reflects the live
 backend state, including an explicit disconnected/empty state when nothing has arrived yet.
+
+Panels: `Header` (connection/session/scan-rate badges) -- `LiveFramePanel` (frame_id/timestamp/
+source/stream state/frame age/scan rate, the single-glance "is this actually live" proof) --
+`StatTiles` (risk/min TTC/object count/scan rate) -- `EnvironmentMap` -- `ClearancePanel`
+(front/rear/left/right/min/corridor/critical object) -- `TrackedObjectsTable` (one row per real
+object: track ID, classification, distance, x/y, velocity, confidence, per-object TTC, risk,
+collision, last seen; click a row for a shape-detail + trajectory-history breakout) --
+`TrackingHistoryPanel` (a dedicated, always-visible per-track view: first/last seen, frames
+tracked, current/previous position, current velocity, and an inline SVG trajectory plot -- built
+entirely client-side from `/ws/live` frames already received, `hooks/useTrackTrajectories.ts`, no
+REST polling) -- `EventTimeline` (real DB-backed risk/clearance transitions) -- `DebugPanel`
+(polls `GET /debug/stream-status` on the same cadence as the other supplementary REST refreshes,
+for a direct backend-vs-WebSocket-vs-frontend cross-check during a live demo).
 
 ## Do not implement yet
 
@@ -187,5 +212,23 @@ same list docs/communication.md's own "Do not implement yet" already established
   track's life or missed messages during a reconnect -- both numbers are honestly what they say
   they are, just from two different vantage points; neither is "the real" one dressed up as the
   other.
+- Only one `scripts/serve_unity_bridge.py` process can run against a given
+  `streaming_json_port`/`streaming_raw_port` pair at a time -- **enforced**, not just documented:
+  `PerceptionStreamServer`/`RawLidarStreamServer` bind via `streaming.server._bind_exclusive`,
+  which uses `SO_EXCLUSIVEADDRUSE` on Windows (falling back to plain `SO_REUSEADDR` on POSIX,
+  where it was never a problem). A second bridge process started while a first is still running
+  now fails immediately and loudly (`serve_unity_bridge.py` prints a clear "is another instance
+  running?" message and exits, rather than an unhandled traceback) instead of the two silently
+  coexisting -- which is what previously let a new client connection land on whichever of two
+  live listeners the OS happened to route it to, not necessarily the one just started (a real
+  bug this project hit: switching scenarios without fully stopping the previous bridge left the
+  dashboard talking to the old one indefinitely). Still stop the previous bridge process before
+  starting a new scenario run (`scripts/run_demo.ps1` only ever starts one) -- now you'll know
+  immediately if you forgot, instead of silently getting stale data. Independently of this,
+  `PerceptionIngestor` (`cloud/backend/src/backend/ingestion.py`) resets its own per-connection
+  frame-id/event-transition tracking on every fresh TCP connection, so a backend that *does* end
+  up talking to a brand new bridge run (the correct case, and the only one now possible) picks up
+  that run's frames immediately rather than misclassifying its low restarted frame_ids as
+  out-of-order against the previous run's high-water mark.
 - No authentication on the REST/WebSocket API -- local-prototype scope, explicitly documented, not
   a gap to silently work around.

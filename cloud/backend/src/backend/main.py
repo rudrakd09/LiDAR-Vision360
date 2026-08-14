@@ -20,7 +20,7 @@ from common.logging import get_logger, setup_logging
 from .config import get_settings
 from .db import Database
 from .ingestion import PerceptionIngestor
-from .routes import core, events, frames, metrics
+from .routes import core, debug, events, frames, metrics
 from .state import LatestState
 from .ws import LiveBroadcastHub
 
@@ -30,7 +30,7 @@ from .ws import LiveBroadcastHub
 # route names, preserve the existing naming where possible and add compatible routes rather than
 # breaking existing clients." Both mounts are the exact same route functions/objects, not two
 # implementations to keep in sync.
-_ROUTE_MODULES = (core, frames, events, metrics)
+_ROUTE_MODULES = (core, frames, events, metrics, debug)
 
 logger = get_logger(__name__)
 

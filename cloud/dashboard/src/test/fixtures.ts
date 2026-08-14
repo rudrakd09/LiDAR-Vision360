@@ -159,3 +159,69 @@ export const REAL_NEXT_CRITICAL_FRAME_MESSAGE: LiveMessage = {
     },
   },
 };
+
+/** frame_id=1, a DIFFERENT scenario ("simulated:05_multiple_obstacles" vs. the 08_* frames
+ * above), reusing "track-1" -- every fresh `scripts/serve_unity_bridge.py` run's `ObjectTracker`
+ * really does start numbering from "track-1" again (Phase 7), so this models the exact scenario-
+ * switch scenario found live: a new producer whose own track-1 has nothing to do with the
+ * previous producer's track-1. Also carries a second object ("track-9") the 08_* frames never
+ * had, and deliberately omits any object with the SAME id as 08_*'s only other would-be track --
+ * used to prove old, no-longer-relevant tracks don't linger. */
+export const REAL_SCENARIO_SWITCH_FRAME_MESSAGE: LiveMessage = {
+  type: "frame",
+  frame_id: 1,
+  data: {
+    timestamp: 1786700000.0,
+    scan_id: "a1b2c3d4-0000-0000-0000-000000000001",
+    sequence_number: 1,
+    source_id: "simulated:05_multiple_obstacles",
+    objects: [
+      {
+        track_id: "track-1",
+        classification: "wall",
+        confidence: 0.91,
+        centroid: { x: 9.0, y: 4.98 },
+        width: 4.8, depth: 0.05,
+        distance: 10.28,
+        velocity: { vx: 0.0, vy: 0.0 },
+        direction: 208.0,
+        predicted_position: { x: 9.0, y: 4.98 },
+        tracking_state: "confirmed", movement_state: "stationary",
+        track_age: 1, track_hits: 1, track_misses: 0,
+      },
+      {
+        track_id: "track-9",
+        classification: "pole_like",
+        confidence: 0.72,
+        centroid: { x: 0.0, y: 2.87 },
+        width: 0.05, depth: 0.2,
+        distance: 2.87,
+        velocity: { vx: 0.0, vy: 0.0 },
+        direction: 268.0,
+        predicted_position: { x: 0.0, y: 2.87 },
+        tracking_state: "confirmed", movement_state: "stationary",
+        track_age: 1, track_hits: 1, track_misses: 0,
+      },
+    ],
+    risk: {
+      overall_risk: "safe",
+      most_critical: null,
+      results: [],
+    },
+    clearance: {
+      front: { direction: "front", distance_m: 5.23, nearest_point: { x: 8.48, y: -8.48 } },
+      rear: { direction: "rear", distance_m: 5.74, nearest_point: { x: -8.49, y: 8.49 } },
+      left: { direction: "left", distance_m: 7.28, nearest_point: { x: 8.48, y: 8.48 } },
+      right: { direction: "right", distance_m: 7.29, nearest_point: { x: -8.49, y: -8.49 } },
+      min_clearance_m: 5.23,
+      min_direction: "front",
+      corridor_width_m: 16.97,
+      overall_status: "safe",
+      reason: ["Closest clearance is 5.23m, front."],
+    },
+    vehicle: { x: 0.0, y: 0.0, heading: 0.0, speed_mps: 0.0 },
+    config: REAL_CRITICAL_FRAME_MESSAGE.data.config,
+    map: null,
+    points: null,
+  },
+};

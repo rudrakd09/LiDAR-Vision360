@@ -34,7 +34,17 @@ export function Header({
 }) {
   const isStale = useStaleness(lastFrameReceivedAt);
   const measuredHz = useMeasuredScanRate(latestFrame?.sequence_number ?? null);
-  const scenarioLabel = backendConnection?.source_id ?? "no active session";
+  // Prefer `latestFrame.source_id` (every PERCEPTION_FRAME carries its own, always-present
+  // source_id -- see serialization.unity_protocol.build_frame_message): it updates on literally
+  // the next WS "frame" message, unlike `backendConnection.source_id`, which only refreshes on
+  // useLiveSocket's own 2-second GET /api/status poll -- this label previously lagged up to 2s
+  // behind a real scenario switch (found via a real repro: switching scenarios and checking this
+  // label before the next poll tick still showed the previous scenario). Fall back to
+  // `backendConnection.source_id` only for the brief cold-start window before this tab's very
+  // first frame has arrived -- the WS "snapshot" message (sent once, immediately on connect)
+  // already carries the backend's currently-known source_id via `connection`, so a freshly
+  // opened dashboard doesn't have to wait for a first frame just to show it.
+  const scenarioLabel = latestFrame?.source_id ?? backendConnection?.source_id ?? "no active session";
 
   let systemLabel: string;
   let systemClass: string;

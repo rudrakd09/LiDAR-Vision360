@@ -40,27 +40,31 @@ from models.objects import DetectedObject, Velocity2D
 from models.tracking import TrackedScan
 
 from .geometry import in_projected_path, relative_motion, vehicle_footprint
+from .hysteresis import RISK_SEVERITY, resolve_risk_with_hysteresis
 from .prediction import simulate_collision
-from .risk import assess_risk
 from .risk import risk_score as _risk_score
 from .ttc import closing_speed_along, compute_ttc
 
 logger = get_logger(__name__)
 
-_RISK_SEVERITY = {RiskLevel.SAFE: 0, RiskLevel.WARNING: 1, RiskLevel.CRITICAL: 2}
-
 
 class CollisionRiskEngine:
     """Assesses SAFE/WARNING/CRITICAL collision risk for every tracked object in a `TrackedScan`.
 
-    Stateless -- safe to share/reuse across scans and streams, like every earlier stage's
-    `*Clusterer`/`*Classifier`/`*Transformer` (unlike `tracking.ObjectTracker`/`mapping.
-    OccupancyGridMapper`, this engine has no memory between calls; every `evaluate()` call is
-    independent, driven entirely by that scan's tracked objects and the supplied `VehicleState`).
+    Holds one small piece of state across calls -- a per-`track_id` "last accepted risk level"
+    (`self._last_accepted_risk`), used only to debounce right-at-the-threshold noise (see
+    `.hysteresis`); the underlying per-scan rule cascade (`risk.assess_risk`) it's built on
+    remains itself a pure, memoryless function, unlike `tracking.ObjectTracker`/`mapping.
+    OccupancyGridMapper`'s own, much larger notion of state (track lifecycle / map accumulation).
+    Reuse one instance across an entire run (`scripts/serve_unity_bridge.py` already does) to get
+    hysteresis; a fresh instance's first-ever assessment of any given track_id is always the
+    plain, unfiltered `assess_risk` result (nothing to debounce against yet), so single-call
+    tests/usage are unaffected either way.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        self._last_accepted_risk: dict[str, RiskLevel] = {}
 
     def evaluate(self, scan: TrackedScan, vehicle_state: VehicleState | None = None) -> CollisionAssessment:
         """Assess every object in `scan.objects`. `vehicle_state` defaults to a stationary
@@ -71,12 +75,20 @@ class CollisionRiskEngine:
 
         results = [self.evaluate_object(obj, vehicle_state, scan.timestamp) for obj in scan.objects]
 
+        # Drop hysteresis memory for any track_id not present in this scan -- a track that's
+        # lost/pruned upstream (tracking.ObjectTracker) shouldn't leave a stale "last accepted
+        # level" behind forever (unbounded growth over a long-running stream) or wrongly seed a
+        # *different*, later-reused track_id's very first assessment with old history.
+        current_track_ids = {obj.track_id for obj in scan.objects if obj.track_id}
+        for stale_id in set(self._last_accepted_risk) - current_track_ids:
+            del self._last_accepted_risk[stale_id]
+
         overall_risk = RiskLevel.SAFE
         most_critical: CollisionRiskResult | None = None
         for result in results:
             if most_critical is None or _is_more_critical(result, most_critical):
                 most_critical = result
-            if _RISK_SEVERITY[result.risk_level] > _RISK_SEVERITY[overall_risk]:
+            if RISK_SEVERITY[result.risk_level] > RISK_SEVERITY[overall_risk]:
                 overall_risk = result.risk_level
 
         logger.debug(
@@ -115,7 +127,18 @@ class CollisionRiskEngine:
             obj.centroid, simulation_velocity, vehicle_state, footprint, obj.width, obj.depth, settings,
         )
 
-        risk_level, reason = assess_risk(path_membership, distance, ttc, closing_speed, collision_predicted, predicted_collision_time, settings)
+        # `track_id` may be `None` for an untracked/pre-tracking object -- there's no stable
+        # identity to hold hysteresis state against, so it falls back to the plain, unfiltered
+        # `assess_risk` result every time (previous_level=SAFE, and nothing is ever stored for a
+        # `None` key -- see resolve_risk_with_hysteresis's own docstring on why SAFE-as-previous
+        # means "immediate, unfiltered" for a track's first-ever assessment).
+        previous_level = self._last_accepted_risk.get(obj.track_id, RiskLevel.SAFE) if obj.track_id else RiskLevel.SAFE
+        risk_level, reason = resolve_risk_with_hysteresis(
+            previous_level, path_membership, distance, ttc, closing_speed, collision_predicted, predicted_collision_time, settings,
+        )
+        if obj.track_id:
+            self._last_accepted_risk[obj.track_id] = risk_level
+
         if obj.velocity is None:
             reason.append("Object velocity not yet reliable (track too new) -- assumed stationary for this estimate; real risk may be higher if it is in fact moving.")
 
@@ -141,8 +164,8 @@ class CollisionRiskEngine:
 
 
 def _is_more_critical(candidate: CollisionRiskResult, current_best: CollisionRiskResult) -> bool:
-    candidate_severity = _RISK_SEVERITY[candidate.risk_level]
-    best_severity = _RISK_SEVERITY[current_best.risk_level]
+    candidate_severity = RISK_SEVERITY[candidate.risk_level]
+    best_severity = RISK_SEVERITY[current_best.risk_level]
     if candidate_severity != best_severity:
         return candidate_severity > best_severity
 

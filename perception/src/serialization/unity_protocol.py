@@ -57,6 +57,17 @@ def build_object_payload(obj: DetectedObject) -> dict:
         "track_age": obj.track_age,
         "track_hits": obj.track_hits,
         "track_misses": obj.track_misses,
+        # Two more real, already-computed geometry fields for a dashboard "object identification"
+        # view -- NOT part of the debugging-only `shape_features` blob this function otherwise
+        # omits (see this function's own docstring): `point_count` is a plain top-level field on
+        # `DetectedObject` itself (Phase 5/clustering), and `aspect_ratio` is the one scalar off
+        # `shape_features` simple/cheap enough (and useful enough for a human glancing at the
+        # dashboard -- "how elongated is this cluster") to promote the same way `width`/`depth`
+        # already were, rather than shipping the whole `ShapeFeatures` object for it. Additive,
+        # backward-compatible -- an older consumer that only reads the fields it already knew
+        # about is unaffected.
+        "point_count": obj.point_count,
+        "aspect_ratio": round(obj.shape_features.aspect_ratio, 4) if obj.shape_features is not None else None,
     }
 
 

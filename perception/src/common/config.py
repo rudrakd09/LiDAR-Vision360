@@ -373,6 +373,19 @@ class Settings(BaseSettings):
     # given at all.
     collision_default_vehicle_speed_mps: float = 0.0
 
+    # Hysteresis: how far beyond the plain thresholds above real distance/TTC must recover before
+    # a risk level is allowed to DE-escalate (CRITICAL->WARNING->SAFE). Escalating (getting worse)
+    # is always immediate/unfiltered -- only recovery is delayed, so genuine danger is never
+    # masked; see collision.hysteresis for the mechanism (a small per-track_id "last accepted
+    # level" memory in CollisionRiskEngine -- assess_risk's own threshold rules are unchanged).
+    # Defaults (0.5m / 0.5s) comfortably absorb the residual sensor/preprocessing noise already
+    # documented above (lidar_distance_noise_std_m default 0.02m) -- found via a real repro: a
+    # wall placed exactly at collision_warning_distance_m (5.0m) flip-flopped SAFE<->WARNING on
+    # nearly every single scan from sub-millimeter jitter, with no code bug anywhere in the
+    # bridge/backend/dashboard pipeline -- the risk engine itself had no deadband at its boundary.
+    collision_risk_hysteresis_distance_margin_m: float = 0.5
+    collision_risk_hysteresis_ttc_margin_s: float = 0.5
+
     # --- Clearance Engine (Phase 10, perception/src/clearance/) ---
     # Directional (front/rear/left/right) clearance thresholds, meters -- from the vehicle's
     # safety-margin envelope edge (collision.geometry.vehicle_footprint, the same envelope Phase 9
