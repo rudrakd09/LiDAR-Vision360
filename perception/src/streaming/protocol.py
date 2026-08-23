@@ -44,7 +44,14 @@ class MessageType(str, Enum):
     ERROR = "ERROR"
 
 
-def _envelope(message_type: MessageType, data: dict, frame_id: int | None, timestamp: float) -> dict:
+def _envelope(
+    message_type: MessageType,
+    data: dict,
+    frame_id: int | None,
+    timestamp: float,
+    session_id: str | None = None,
+    source_id: str | None = None,
+) -> dict:
     """Build one envelope. `timestamp` is the *scan's own* timestamp (when Python captured/
     processed the data this message describes); `transmission_timestamp` is stamped here, at
     publish time -- i.e. before any per-client queueing delay. For a healthy connection (queue
@@ -53,10 +60,24 @@ def _envelope(message_type: MessageType, data: dict, frame_id: int | None, times
     `transmission_timestamp` rather than trying to separately track "time actually on the wire"
     is a deliberate simplification -- see docs/communication.md "Timestamps" ("avoid unnecessary
     complexity if the existing system only supports one [additional] timestamp").
+
+    `session_id`/`source_id` are additive envelope-level fields (see docs/architecture.md
+    "Session and sequence management"): every message a given `scripts/serve_unity_bridge.py`
+    *run* sends -- PERCEPTION_FRAME, HEARTBEAT, SYSTEM_STATUS, and ERROR alike -- carries the same
+    `session_id` (minted once per run, see `pipeline.LiveStateBuilder`) and `source_id` (the real
+    `SensorSource.source_id` -- `"simulated:<scenario>"` or `"stm32_hardware"`, never the CLI's own
+    `--scenario` string, which isn't meaningful in hardware mode). This is what lets a receiver
+    reject a message from a *previous* session outright, before even looking at `frame_id` --
+    `None` (the default) preserves the exact prior envelope shape for any caller that hasn't been
+    updated to supply them (e.g. a one-off test), an old JSON consumer that doesn't know these
+    keys exist simply ignores them (Newtonsoft.Json/`dict.get` both do), so this is purely
+    additive, no protocol version bump needed -- see "Versioning policy" above.
     """
     return {
         "protocol_version": PROTOCOL_VERSION,
         "message_type": message_type.value,
+        "session_id": session_id,
+        "source_id": source_id,
         "frame_id": frame_id,
         "timestamp": timestamp,
         "transmission_timestamp": time.time(),
@@ -75,6 +96,8 @@ def build_perception_frame_message(
     point_mode: str = "polar",
     raw_points=None,
     settings=None,
+    session_id: str | None = None,
+    live_state=None,
 ) -> dict:
     """The main data-carrying message: one per scan. `frame_id` is the source `TrackedScan`'s own
     monotonically-increasing `sequence_number` (from `tracking.ObjectTracker`, see
@@ -99,12 +122,14 @@ def build_perception_frame_message(
         include_points=point_mode != "none" and raw_points is not None,
         raw_points=raw_points,
         settings=settings,
+        live_state=live_state,
     )
     data = _apply_point_mode(data, point_mode)
 
     return _envelope(
         MessageType.PERCEPTION_FRAME, data,
         frame_id=tracked_scan.sequence_number, timestamp=tracked_scan.timestamp,
+        session_id=session_id, source_id=tracked_scan.source_id,
     )
 
 
@@ -135,37 +160,47 @@ def _apply_point_mode(data: dict, point_mode: str) -> dict:
     return data
 
 
-def build_heartbeat_message(uptime_s: float, frames_sent: int, clients_connected: int) -> dict:
+def build_heartbeat_message(
+    uptime_s: float, frames_sent: int, clients_connected: int,
+    session_id: str | None = None, source_id: str | None = None,
+) -> dict:
     """Sent on a fixed interval (`streaming_heartbeat_interval_s`) regardless of whether a real
     `PERCEPTION_FRAME` was also published in that window, so a client can distinguish "no new
     scan yet" from "the server has stopped talking to me" -- see docs/communication.md
-    "Heartbeat / connection status"."""
+    "Heartbeat / connection status". Carries `session_id`/`source_id` too (see `_envelope`'s own
+    docstring) so a client can tell a heartbeat still belongs to the session it thinks is current."""
     return _envelope(
         MessageType.HEARTBEAT,
         {"uptime_s": round(uptime_s, 3), "frames_sent": frames_sent, "clients_connected": clients_connected},
-        frame_id=None, timestamp=time.time(),
+        frame_id=None, timestamp=time.time(), session_id=session_id, source_id=source_id,
     )
 
 
-def build_system_status_message(status: str, source_id: str | None = None, scan_rate_hz: float | None = None) -> dict:
+def build_system_status_message(
+    status: str, source_id: str | None = None, scan_rate_hz: float | None = None, session_id: str | None = None,
+) -> dict:
     """Sent once per client connection (not on a repeating interval like HEARTBEAT) -- static-ish
     session information (what scenario/source is running, the configured scan rate), for the
     HUD's own "SYSTEM: Connected" line to have something more specific to show than just
-    connectivity."""
+    connectivity. `source_id` is kept in `data` too (unchanged, backward-compatible) as well as
+    promoted to the envelope (see `_envelope`'s own docstring)."""
     return _envelope(
         MessageType.SYSTEM_STATUS,
         {"status": status, "source_id": source_id, "scan_rate_hz": scan_rate_hz},
-        frame_id=None, timestamp=time.time(),
+        frame_id=None, timestamp=time.time(), session_id=session_id, source_id=source_id,
     )
 
 
-def build_error_message(code: str, message: str) -> dict:
+def build_error_message(code: str, message: str, session_id: str | None = None, source_id: str | None = None) -> dict:
     """Sent when the server catches an internal error it can recover from (e.g. one scan's
     pipeline run raised, but the server itself keeps running -- see docs/communication.md
     "Non-blocking design") -- so a connected Unity client can surface *something* on the HUD
     ("server error: ...") instead of the frame stream just silently stalling with no
     explanation."""
-    return _envelope(MessageType.ERROR, {"code": code, "message": message}, frame_id=None, timestamp=time.time())
+    return _envelope(
+        MessageType.ERROR, {"code": code, "message": message},
+        frame_id=None, timestamp=time.time(), session_id=session_id, source_id=source_id,
+    )
 
 
 class FrameIdStatus(str, Enum):

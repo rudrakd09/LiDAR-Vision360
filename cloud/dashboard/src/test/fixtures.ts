@@ -8,7 +8,48 @@
  * tests exist to catch, and a hand-written fixture could accidentally "fix" that mismatch by
  * construction.
  */
-import type { LiveMessage } from "../types";
+import type { LiveMessage, PerceptionObject, TrackedObjectData, CollisionResult } from "../types";
+
+/** These fixtures predate `tracked_objects`/`session_id`/`events`/`sensor_status`/
+ * `performance_metrics` being added to the wire (see docs/architecture.md "Dashboard and Unity as
+ * pure LiveState consumers") -- they cannot be re-captured (the original live run is long gone),
+ * so `tracked_objects` below is *derived* mechanically from each fixture's own real `objects`/
+ * `risk.results` using the exact same join `pipeline.LiveStateBuilder._tracked_object_states`
+ * performs (by `track_id`), not invented. `first_seen`/`last_seen`/`frames_tracked`/`trajectory`
+ * are filled from each object's own real `track_age`/`track_hits`/`centroid`/`velocity` fields
+ * (already present, captured for real) rather than a plausible-looking guess. */
+function deriveTrackedObjects(objects: PerceptionObject[], results: CollisionResult[], timestamp: number, sequenceNumber: number): TrackedObjectData[] {
+  const resultByTrack = new Map(results.map((r) => [r.track_id, r]));
+  return objects
+    .filter((o) => o.track_id)
+    .map((o) => {
+      const result = resultByTrack.get(o.track_id);
+      return {
+        track_id: o.track_id,
+        classification: o.classification,
+        confidence: o.confidence,
+        x: o.centroid.x,
+        y: o.centroid.y,
+        distance: o.distance,
+        velocity: o.velocity,
+        sensor_source: "lidar",
+        first_seen: timestamp,
+        last_seen: timestamp,
+        frames_tracked: o.track_hits,
+        trajectory: [
+          {
+            frame_id: sequenceNumber, timestamp, x: o.centroid.x, y: o.centroid.y,
+            vx: o.velocity?.vx ?? null, vy: o.velocity?.vy ?? null, distance: o.distance,
+            classification: o.classification, tracking_state: o.tracking_state,
+          },
+        ],
+        ttc: result?.ttc ?? null,
+        risk: result?.risk_level ?? null,
+        tracking_state: o.tracking_state,
+        movement_state: o.movement_state,
+      } satisfies TrackedObjectData;
+    });
+}
 
 export const REAL_SNAPSHOT_MESSAGE: LiveMessage = {
   type: "snapshot",
@@ -26,10 +67,50 @@ export const REAL_SNAPSHOT_MESSAGE: LiveMessage = {
       scan_rate_hz: null,
       dashboard_clients_connected: 1,
       session_status: "active",
+      session_id: "test-session-08",
+      session_frames_received: 3,
+      measured_scan_rate_hz: null,
     },
     latest_frame: null,
   },
 };
+
+const CRITICAL_FRAME_OBJECTS: PerceptionObject[] = [
+  {
+    track_id: "track-1",
+    classification: "vehicle_like",
+    confidence: 1.0,
+    centroid: { x: 5.1547, y: 0.0002 },
+    width: 1.632,
+    depth: 0.0324,
+    distance: 5.1547,
+    velocity: { vx: -2.0035, vy: 0.0005 },
+    direction: 179.9857,
+    predicted_position: { x: 4.9543, y: 0.0002 },
+    tracking_state: "confirmed",
+    movement_state: "moving",
+    track_age: 14,
+    track_hits: 14,
+    track_misses: 0,
+  },
+];
+
+const CRITICAL_FRAME_RESULTS: CollisionResult[] = [
+  {
+    track_id: "track-1",
+    classification: "vehicle_like",
+    distance: 5.1547,
+    relative_speed: 2.0035,
+    in_projected_path: true,
+    ttc: 0.8758,
+    collision_predicted: true,
+    predicted_collision_time: 0.9,
+    predicted_collision_position: { x: 3.3516, y: 0.0007 },
+    risk_level: "critical",
+    risk_score: 1.0,
+    reason: ["Predicted footprints intersect in 0.90s (<= critical threshold 2.00s)."],
+  },
+];
 
 /** frame_id=13, real captured payload -- `risk.overall_risk` is already "critical" with a finite
  * `ttc`, one tracked object, and real (non-round) clearance numbers -- exactly the state the
@@ -38,29 +119,16 @@ export const REAL_CRITICAL_FRAME_MESSAGE: LiveMessage = {
   type: "frame",
   frame_id: 13,
   data: {
+    session_id: "test-session-08",
     timestamp: 1786602527.0760803,
     scan_id: "17a71206-da65-413f-8fb4-8da8ec3e30e6",
     sequence_number: 13,
     source_id: "simulated:08_approaching_obstacle",
-    objects: [
-      {
-        track_id: "track-1",
-        classification: "vehicle_like",
-        confidence: 1.0,
-        centroid: { x: 5.1547, y: 0.0002 },
-        width: 1.632,
-        depth: 0.0324,
-        distance: 5.1547,
-        velocity: { vx: -2.0035, vy: 0.0005 },
-        direction: 179.9857,
-        predicted_position: { x: 4.9543, y: 0.0002 },
-        tracking_state: "confirmed",
-        movement_state: "moving",
-        track_age: 14,
-        track_hits: 14,
-        track_misses: 0,
-      },
-    ],
+    objects: CRITICAL_FRAME_OBJECTS,
+    tracked_objects: deriveTrackedObjects(CRITICAL_FRAME_OBJECTS, CRITICAL_FRAME_RESULTS, 1786602527.0760803, 13),
+    events: [],
+    sensor_status: { lidar: { connected: true, point_count: 360, valid_percentage: 100.0, mean_distance_m: 6.5 }, radar: null },
+    performance_metrics: { pipeline_processing_ms: 1.2, measured_scan_interval_s: 0.1, measured_scan_rate_hz: 10.0, scans_processed: 13 },
     risk: {
       overall_risk: "critical",
       most_critical: {
@@ -77,22 +145,7 @@ export const REAL_CRITICAL_FRAME_MESSAGE: LiveMessage = {
         risk_score: 1.0,
         reason: ["Predicted footprints intersect in 0.90s (<= critical threshold 2.00s)."],
       },
-      results: [
-        {
-          track_id: "track-1",
-          classification: "vehicle_like",
-          distance: 5.1547,
-          relative_speed: 2.0035,
-          in_projected_path: true,
-          ttc: 0.8758,
-          collision_predicted: true,
-          predicted_collision_time: 0.9,
-          predicted_collision_position: { x: 3.3516, y: 0.0007 },
-          risk_level: "critical",
-          risk_score: 1.0,
-          reason: ["Predicted footprints intersect in 0.90s (<= critical threshold 2.00s)."],
-        },
-      ],
+      results: CRITICAL_FRAME_RESULTS,
     },
     clearance: {
       front: { direction: "front", distance_m: 1.894, nearest_point: { x: 5.144, y: -0.8147 } },
@@ -118,11 +171,19 @@ export const REAL_CRITICAL_FRAME_MESSAGE: LiveMessage = {
       collision_warning_ttc_s: 4.0,
       collision_critical_ttc_s: 2.0,
       lidar_range_max_m: 12.0,
+      data_source: "simulation",
     },
     map: null,
     points: null,
   },
 };
+
+const NEXT_CRITICAL_FRAME_OBJECTS: PerceptionObject[] = [
+  { ...CRITICAL_FRAME_OBJECTS[0], centroid: { x: 4.9548, y: 0.0002 }, distance: 4.9548, track_hits: 15, track_age: 15 },
+];
+const NEXT_CRITICAL_FRAME_RESULTS: CollisionResult[] = [
+  { ...CRITICAL_FRAME_RESULTS[0], distance: 4.9548, ttc: 0.7763, predicted_collision_time: 0.8 },
+];
 
 /** frame_id=14, one tick later -- same shape, values moved (distance/ttc/clearance all decreased
  * further), used to prove a newer frame actually replaces the previous one rather than the UI
@@ -134,15 +195,17 @@ export const REAL_NEXT_CRITICAL_FRAME_MESSAGE: LiveMessage = {
     ...REAL_CRITICAL_FRAME_MESSAGE.data,
     sequence_number: 14,
     timestamp: 1786602527.1765504,
-    objects: [
-      {
-        ...REAL_CRITICAL_FRAME_MESSAGE.data.objects[0],
-        centroid: { x: 4.9548, y: 0.0002 },
-        distance: 4.9548,
-        track_hits: 15,
-        track_age: 15,
-      },
-    ],
+    objects: NEXT_CRITICAL_FRAME_OBJECTS,
+    // Trajectory carries BOTH points -- this is what the real Edge's `tracking.TrackHistory`
+    // would have accumulated by now (frame 13's position, then frame 14's), not just this one
+    // frame's -- see deriveTrackedObjects' own docstring for why these fixtures otherwise derive
+    // only a single point per frame (they're independent frozen captures, not a live session).
+    tracked_objects: deriveTrackedObjects(NEXT_CRITICAL_FRAME_OBJECTS, NEXT_CRITICAL_FRAME_RESULTS, 1786602527.1765504, 14).map((t) => ({
+      ...t,
+      first_seen: REAL_CRITICAL_FRAME_MESSAGE.data.tracked_objects![0].first_seen,
+      trajectory: [...REAL_CRITICAL_FRAME_MESSAGE.data.tracked_objects![0].trajectory, ...t.trajectory],
+    })),
+    events: [],
     risk: {
       ...REAL_CRITICAL_FRAME_MESSAGE.data.risk!,
       most_critical: {
@@ -151,6 +214,7 @@ export const REAL_NEXT_CRITICAL_FRAME_MESSAGE: LiveMessage = {
         ttc: 0.7763,
         predicted_collision_time: 0.8,
       },
+      results: NEXT_CRITICAL_FRAME_RESULTS,
     },
     clearance: {
       ...REAL_CRITICAL_FRAME_MESSAGE.data.clearance!,
@@ -160,48 +224,60 @@ export const REAL_NEXT_CRITICAL_FRAME_MESSAGE: LiveMessage = {
   },
 };
 
+const SCENARIO_SWITCH_OBJECTS: PerceptionObject[] = [
+  {
+    track_id: "track-1",
+    classification: "wall",
+    confidence: 0.91,
+    centroid: { x: 9.0, y: 4.98 },
+    width: 4.8, depth: 0.05,
+    distance: 10.28,
+    velocity: { vx: 0.0, vy: 0.0 },
+    direction: 208.0,
+    predicted_position: { x: 9.0, y: 4.98 },
+    tracking_state: "confirmed", movement_state: "stationary",
+    track_age: 1, track_hits: 1, track_misses: 0,
+  },
+  {
+    track_id: "track-9",
+    classification: "pole_like",
+    confidence: 0.72,
+    centroid: { x: 0.0, y: 2.87 },
+    width: 0.05, depth: 0.2,
+    distance: 2.87,
+    velocity: { vx: 0.0, vy: 0.0 },
+    direction: 268.0,
+    predicted_position: { x: 0.0, y: 2.87 },
+    tracking_state: "confirmed", movement_state: "stationary",
+    track_age: 1, track_hits: 1, track_misses: 0,
+  },
+];
+
 /** frame_id=1, a DIFFERENT scenario ("simulated:05_multiple_obstacles" vs. the 08_* frames
  * above), reusing "track-1" -- every fresh `scripts/serve_unity_bridge.py` run's `ObjectTracker`
  * really does start numbering from "track-1" again (Phase 7), so this models the exact scenario-
  * switch scenario found live: a new producer whose own track-1 has nothing to do with the
  * previous producer's track-1. Also carries a second object ("track-9") the 08_* frames never
  * had, and deliberately omits any object with the SAME id as 08_*'s only other would-be track --
- * used to prove old, no-longer-relevant tracks don't linger. */
+ * used to prove old, no-longer-relevant tracks don't linger. A genuinely different `session_id`
+ * too (see docs/architecture.md "Session and sequence management") -- a real scenario switch
+ * always mints a new one. */
 export const REAL_SCENARIO_SWITCH_FRAME_MESSAGE: LiveMessage = {
   type: "frame",
   frame_id: 1,
   data: {
+    session_id: "test-session-05",
     timestamp: 1786700000.0,
     scan_id: "a1b2c3d4-0000-0000-0000-000000000001",
     sequence_number: 1,
     source_id: "simulated:05_multiple_obstacles",
-    objects: [
-      {
-        track_id: "track-1",
-        classification: "wall",
-        confidence: 0.91,
-        centroid: { x: 9.0, y: 4.98 },
-        width: 4.8, depth: 0.05,
-        distance: 10.28,
-        velocity: { vx: 0.0, vy: 0.0 },
-        direction: 208.0,
-        predicted_position: { x: 9.0, y: 4.98 },
-        tracking_state: "confirmed", movement_state: "stationary",
-        track_age: 1, track_hits: 1, track_misses: 0,
-      },
-      {
-        track_id: "track-9",
-        classification: "pole_like",
-        confidence: 0.72,
-        centroid: { x: 0.0, y: 2.87 },
-        width: 0.05, depth: 0.2,
-        distance: 2.87,
-        velocity: { vx: 0.0, vy: 0.0 },
-        direction: 268.0,
-        predicted_position: { x: 0.0, y: 2.87 },
-        tracking_state: "confirmed", movement_state: "stationary",
-        track_age: 1, track_hits: 1, track_misses: 0,
-      },
+    objects: SCENARIO_SWITCH_OBJECTS,
+    tracked_objects: deriveTrackedObjects(SCENARIO_SWITCH_OBJECTS, [], 1786700000.0, 1),
+    events: [
+      // A real session boundary: source_id AND session_id both changed -- see
+      // docs/architecture.md "Session and sequence management".
+      { event_type: "track_created", sequence_number: 1, timestamp: 1786700000.0, track_id: "track-1", previous_value: null, new_value: "confirmed", summary: "Track track-1 created (wall)." },
+      { event_type: "track_created", sequence_number: 1, timestamp: 1786700000.0, track_id: "track-9", previous_value: null, new_value: "confirmed", summary: "Track track-9 created (pole_like)." },
     ],
     risk: {
       overall_risk: "safe",

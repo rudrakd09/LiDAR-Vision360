@@ -36,6 +36,68 @@ class TestRecordFrame:
             state.record_frame(_frame(), frame_id=i)
         assert state.connection.frames_received == 5
 
+    def test_session_frames_received_increments_alongside_frames_received(self):
+        state = LatestState(ring_buffer_size=10, track_grace_period_s=2.0)
+        for i in range(5):
+            state.record_frame(_frame(), frame_id=i)
+        assert state.connection.session_frames_received == 5
+
+
+class TestResetForNewSession:
+    """See docs/architecture.md "Session and sequence management" -- a new session must wipe
+    every piece of the previous one's state, not just wait for new frames to gradually overwrite
+    it."""
+
+    def test_clears_latest_frame_and_ring_buffer(self):
+        state = LatestState(ring_buffer_size=10, track_grace_period_s=2.0)
+        state.record_frame(_frame(timestamp=1.0), frame_id=0)
+        state.record_frame(_frame(timestamp=2.0), frame_id=1)
+        assert state.latest_frame is not None
+
+        state.reset_for_new_session(session_id="s2", source_id="simulated:02_wall_in_front")
+
+        assert state.latest_frame is None
+        assert state.recent_frames() == []
+
+    def test_clears_tracks_and_history(self):
+        state = LatestState(ring_buffer_size=10, track_grace_period_s=2.0, track_history_length=10)
+        state.record_frame(_frame(objects=[_object(track_id="t1")]), frame_id=0)
+        assert state.tracks_roster()
+        assert state.track_history("t1") is not None
+
+        state.reset_for_new_session(session_id="s2", source_id="new")
+
+        assert state.tracks_roster() == []
+        assert state.track_history("t1") is None
+        assert state.track_summary("t1") is None
+
+    def test_resets_session_scoped_connection_fields(self):
+        state = LatestState(ring_buffer_size=10, track_grace_period_s=2.0)
+        for i in range(4):
+            state.record_frame(_frame(), frame_id=i)
+        assert state.connection.session_frames_received == 4
+        assert state.connection.last_frame_id == 3
+
+        state.reset_for_new_session(session_id="new-session-id", source_id="simulated:01_empty")
+
+        assert state.connection.session_frames_received == 0
+        assert state.connection.last_frame_id is None
+        assert state.connection.session_id == "new-session-id"
+        assert state.connection.source_id == "simulated:01_empty"
+
+    def test_does_not_touch_process_lifetime_frames_received(self):
+        """`frames_received` (unlike `session_frames_received`) stays cumulative across a reset --
+        existing multi-reconnect behavior/tests depend on this, see test_ingestion.py's own
+        `test_new_connection_with_lower_frame_ids_is_not_dropped_as_out_of_order`."""
+        state = LatestState(ring_buffer_size=10, track_grace_period_s=2.0)
+        for i in range(3):
+            state.record_frame(_frame(), frame_id=i)
+        state.reset_for_new_session(session_id="s2", source_id="new")
+        for i in range(2):
+            state.record_frame(_frame(), frame_id=i)
+        assert state.connection.frames_received == 5
+        assert state.connection.session_frames_received == 2
+
 
 class TestTracksRoster:
     def test_track_appears_after_being_seen(self):

@@ -3,8 +3,20 @@
 import pytest
 
 from common.config import Settings
-from datasources import LiDARDataSource, SerialLiDARDataSource, SimulatedLiDARDataSource
+from datasources import LiDARDataSource, SensorFrame, SensorSource, SerialLiDARDataSource, SimulatedLiDARDataSource
 from models import LiDARPoint, ScanFrame
+
+
+class TestSensorSourceAliases:
+    """`SensorSource`/`SensorFrame` (the sensor-input-abstraction vocabulary) must be exactly the
+    pre-existing `LiDARDataSource`/`ScanFrame` -- plain aliases, not a parallel schema/interface --
+    so every class/test written against either name is interchangeable. See datasources/base.py."""
+
+    def test_sensor_source_is_lidar_data_source(self):
+        assert SensorSource is LiDARDataSource
+
+    def test_sensor_frame_is_scan_frame(self):
+        assert SensorFrame is ScanFrame
 
 
 class TestSimulatedLiDARDataSource:

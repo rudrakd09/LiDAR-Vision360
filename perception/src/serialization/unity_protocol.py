@@ -29,6 +29,7 @@ import numpy as np
 from common.config import Settings, get_settings
 from models.clearance import ClearanceAssessment
 from models.collision import CollisionAssessment, CollisionRiskResult, VehicleState
+from models.live_state import LiveState
 from models.mapping import OccupancyGrid
 from models.objects import DetectedObject
 from models.tracking import TrackedScan
@@ -181,7 +182,118 @@ def build_config_payload(settings: Settings | None = None) -> dict:
         "collision_warning_ttc_s": settings.collision_warning_ttc_s,
         "collision_critical_ttc_s": settings.collision_critical_ttc_s,
         "lidar_range_max_m": settings.lidar_range_max_m,
+        # "simulation" | "hardware" -- Settings.data_source (see docs/architecture.md "Sensor
+        # source abstraction") -- lets a consumer show a real DATA SOURCE indicator (see
+        # docs/architecture.md "Dashboard and Unity as pure LiveState consumers") without
+        # inferring it from source_id's own string shape.
+        "data_source": settings.data_source,
     }
+
+
+def build_trajectory_point_payload(point) -> dict:
+    return {
+        "frame_id": point.frame_id,
+        "timestamp": point.timestamp,
+        "x": point.x,
+        "y": point.y,
+        "vx": point.vx,
+        "vy": point.vy,
+        "distance": point.distance,
+        "classification": point.classification.value,
+        "tracking_state": point.tracking_state.value if point.tracking_state is not None else None,
+    }
+
+
+def build_tracked_object_payload(state) -> dict:
+    """One track's full `LiveState.tracked_objects` entry -- see
+    `models.live_state.TrackedObjectState`'s own docstring. Distinct from `build_object_payload`
+    above (this scan's *raw* `DetectedObject`, no history): this is the richer, history-joined
+    view -- `first_seen`/`last_seen`/`frames_tracked`/`trajectory` come from `tracking.
+    TrackHistory` (the real tracker's own output, bookkept at the Edge), and `ttc`/`risk` are
+    joined by `track_id` from the same scan's `CollisionRiskResult` (see `pipeline.
+    LiveStateBuilder._tracked_object_states` for the join itself -- this function only serializes
+    the already-joined result, it does not perform the join)."""
+    return {
+        "track_id": state.track_id,
+        "classification": state.classification.value,
+        "confidence": round(state.confidence, 4),
+        "x": state.x,
+        "y": state.y,
+        "distance": state.distance,
+        "velocity": {"vx": state.velocity.vx, "vy": state.velocity.vy} if state.velocity is not None else None,
+        "sensor_source": state.sensor_source,
+        "first_seen": state.first_seen,
+        "last_seen": state.last_seen,
+        "frames_tracked": state.frames_tracked,
+        "trajectory": [build_trajectory_point_payload(p) for p in state.trajectory],
+        "ttc": state.ttc,
+        "risk": state.risk.value if state.risk is not None else None,
+        "tracking_state": state.tracking_state.value if state.tracking_state is not None else None,
+        "movement_state": state.movement_state.value if state.movement_state is not None else None,
+    }
+
+
+def build_tracked_objects_payload(live_state: LiveState | None) -> list[dict] | None:
+    """`None` when no `LiveState` was supplied at all (same None-in/None-out contract every other
+    optional field on this payload follows) -- `[]` (not `None`) when a LiveState exists but no
+    object is currently tracked, a real and valid answer, not "no data"."""
+    if live_state is None:
+        return None
+    return [build_tracked_object_payload(t) for t in live_state.tracked_objects]
+
+
+def build_events_payload(live_state: LiveState | None, sequence_number: int | None = None) -> list[dict] | None:
+    """Events recorded THIS scan only (`sequence_number` filter), not `live_state.events`'
+    entire retained backlog -- sending the full bounded history (up to `Settings.
+    live_state_event_max_count`) on every single frame would be wasted bandwidth once the log
+    fills up; a consumer that wants the running timeline accumulates these per-frame deltas
+    itself (the same "buffer what the Edge already told you, stream by stream" pattern this
+    project's own dashboard hooks already use for trajectories -- not a re-derivation, since every
+    event here was already fully computed by `pipeline.LiveStateBuilder`). `[]` (not `None`) is the
+    normal case (no transition happened this scan); `None` only when no `LiveState` was supplied
+    at all."""
+    if live_state is None:
+        return None
+    events = live_state.events
+    if sequence_number is not None:
+        events = [e for e in events if e.sequence_number == sequence_number]
+    return [
+        {
+            "event_type": e.event_type,
+            "sequence_number": e.sequence_number,
+            "timestamp": e.timestamp,
+            "track_id": e.track_id,
+            "previous_value": e.previous_value,
+            "new_value": e.new_value,
+            "summary": e.summary,
+        }
+        for e in events
+    ]
+
+
+def build_sensor_status_payload(live_state: LiveState | None) -> dict | None:
+    """`live_state.sensor_status` verbatim -- keyed by modality ("lidar", "radar", ...), each
+    value real-measured or `null` for a modality this deployment has no sensor for at all (see
+    `models.live_state.SensorChannelStatus`/`LiveState.sensor_status` docstrings). `None` (the
+    whole field omitted from meaning) only when no `live_state` was supplied at all -- same
+    None-in/None-out contract every other optional field on this payload already follows."""
+    if live_state is None:
+        return None
+    return {
+        modality: (status.model_dump() if status is not None else None)
+        for modality, status in live_state.sensor_status.items()
+    }
+
+
+def build_performance_payload(live_state: LiveState | None) -> dict | None:
+    """`live_state.performance_metrics` verbatim -- real, directly-measured figures only (see
+    `models.live_state.PerformanceMetrics`'s own docstring: no fabricated throughput this process
+    doesn't actually measure). This is what lets a downstream consumer (the backend's `GET
+    /debug/stream-status`, in particular) report a real `scan_rate` instead of the stale,
+    once-per-run `SYSTEM_STATUS.scan_rate_hz` value -- see docs/cloud.md "Known limitations"."""
+    if live_state is None:
+        return None
+    return live_state.performance_metrics.model_dump()
 
 
 def build_vehicle_payload(vehicle_state: VehicleState | None) -> dict:
@@ -205,6 +317,7 @@ def build_frame_message(
     include_points: bool = False,
     raw_points: list | None = None,
     settings: Settings | None = None,
+    live_state: LiveState | None = None,
 ) -> dict:
     """Assemble one versioned Python -> Unity frame message -- see docs/unity.md "Python -> Unity
     protocol" for the full schema.
@@ -223,15 +336,20 @@ def build_frame_message(
     scan in five for the map), not every frame.
     """
     return {
+        "session_id": live_state.session_id if live_state is not None else None,
         "timestamp": tracked_scan.timestamp,
         "scan_id": tracked_scan.scan_id,
         "sequence_number": tracked_scan.sequence_number,
         "source_id": tracked_scan.source_id,
         "objects": [build_object_payload(o) for o in tracked_scan.objects],
+        "tracked_objects": build_tracked_objects_payload(live_state),
         "risk": build_risk_payload(collision_assessment),
         "clearance": build_clearance_payload(clearance_assessment),
         "vehicle": build_vehicle_payload(vehicle_state),
         "config": build_config_payload(settings),
+        "sensor_status": build_sensor_status_payload(live_state),
+        "performance_metrics": build_performance_payload(live_state),
+        "events": build_events_payload(live_state, tracked_scan.sequence_number),
         "map": pack_occupancy_grid(occupancy_grid, downsample=map_downsample) if include_map else None,
         "points": (
             [{"angle": p.angle, "distance": p.distance, "valid": p.valid} for p in raw_points]

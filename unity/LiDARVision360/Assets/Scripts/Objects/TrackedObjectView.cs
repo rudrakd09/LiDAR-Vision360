@@ -153,8 +153,14 @@ public class TrackedObjectView : MonoBehaviour
     /// tracking.ObjectTracker gathers more hits), velocity, prediction, and label text. Nothing
     /// here computes/estimates anything on its own -- every value comes directly from Python, per
     /// this phase's "do not independently calculate object velocity in Unity" requirement.
+    ///
+    /// <paramref name="trackedState"/> is this same track's entry from `frame.trackedObjects`
+    /// (see docs/architecture.md "Dashboard and Unity as pure LiveState consumers") -- carries
+    /// TTC/risk/sensor_source, already joined by track_id at the Edge. `null` only for an older
+    /// payload that predates `tracked_objects` (label simply omits those lines then, same
+    /// graceful-degradation rule every other optional field here follows).
     /// </summary>
-    public void ApplyData(PerceptionObjectData data, Transform origin)
+    public void ApplyData(PerceptionObjectData data, Transform origin, TrackedObjectData trackedState = null)
     {
         if (_shape == null || _lastClassification != data.classification)
             BuildShape(data.classification);
@@ -194,10 +200,23 @@ public class TrackedObjectView : MonoBehaviour
             string speedText = data.velocity != null
                 ? Mathf.Sqrt(data.velocity.vx * data.velocity.vx + data.velocity.vy * data.velocity.vy).ToString("F1") + " m/s"
                 : "...";
-            _label.text = string.Format(
+            string text = string.Format(
                 "#{0}\n{1}\nConf: {2:F2}\nDist: {3:F1} m\nSpeed: {4}",
                 data.trackId, data.classification.ToUpperInvariant(), data.confidence, data.distance, speedText
             );
+            // Matches this SAME track's own TTC/risk, joined by track_id at the Edge -- see
+            // docs/architecture.md "Dashboard and Unity as pure LiveState consumers": if the
+            // dashboard shows "Track 12 / Vehicle / TTC 1.8s / WARNING", this label shows exactly
+            // that for the same track_id, both reading the identical wire field, never a second
+            // computation. Omitted (not "N/A") when trackedState is null (older payload) or this
+            // track wasn't evaluated by the collision engine this scan.
+            if (trackedState != null)
+            {
+                string ttcText = trackedState.ttc.HasValue ? trackedState.ttc.Value.ToString("F1") + "s" : "N/A";
+                string riskText = !string.IsNullOrEmpty(trackedState.risk) ? trackedState.risk.ToUpperInvariant() : "—";
+                text += string.Format("\nTTC: {0}\nRisk: {1}", ttcText, riskText);
+            }
+            _label.text = text;
         }
     }
 

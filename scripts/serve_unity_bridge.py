@@ -35,11 +35,13 @@ from collision import CollisionRiskEngine
 from common.config import Settings, get_settings
 from common.logging import get_logger, setup_logging
 from coordinates import CoordinateTransformer
+from fusion import FusionEngine
 from mapping import OccupancyGridMapper
 from models.collision import VehicleState
 from objects import GeometricClassifier
+from pipeline import LiveStateBuilder
 from preprocessing import Preprocessor
-from simulator.scenarios import make_data_source
+from sensor_source import get_sensor_source
 from streaming import PerceptionStreamServer, RawLidarStreamServer
 from streaming.protocol import build_error_message, build_perception_frame_message, build_system_status_message
 from tracking import ObjectTracker
@@ -74,13 +76,37 @@ def run(args: argparse.Namespace, settings: Settings) -> None:
     clusterer = DBSCANClusterer()
     classifier = GeometricClassifier()
     tracker = ObjectTracker()  # stateful -- one instance for the whole run, see docs/tracking.md
+    # Sensor fusion (Phase 9, see docs/fusion.md): stateless, like engine/clearance_engine below.
+    # A no-op passthrough in simulation mode (SimulatorSource has no `latest_radar_reading`) and
+    # in hardware mode until a real radar payload parser replaces `UnconfiguredRadarParser` (see
+    # docs/hardware-integration.md) -- existing LiDAR-only behavior is unaffected either way.
+    fusion_engine = FusionEngine(settings=settings)
     mapper = OccupancyGridMapper()  # stateful -- one instance for the whole run, see docs/mapping.md
     engine = CollisionRiskEngine()
     clearance_engine = ClearanceEngine()  # stateless, like engine -- see docs/collision.md "Directional clearance"
+    # LiveState (Edge single-source-of-truth aggregate -- see docs/architecture.md "LiveState",
+    # models/live_state.py, pipeline/live_state.py): stateful across the whole run for the same
+    # reason tracker/engine/mapper are -- session identity, per-track history, and event
+    # transitions all need continuity scan-to-scan. Runs no perception algorithm of its own; only
+    # joins/records what the stages above already computed.
+    live_state_builder = LiveStateBuilder(settings=settings)
     vehicle_state = VehicleState(speed_mps=args.vehicle_speed)
-    source = make_data_source(args.scenario)
+    # Sensor input abstraction (see docs/architecture.md "Sensor source abstraction"):
+    # `Settings.data_source` ("simulation"/"hardware") picks `simulator.SimulatorSource` or
+    # `datasources.STM32Source` -- this script never constructs either directly, so it works
+    # unchanged once a future run points at real hardware. `args.scenario` is only used/required
+    # in "simulation" mode; see `sensor_source.get_sensor_source`.
+    source = get_sensor_source(settings, scenario=args.scenario)
 
-    json_server.publish(build_system_status_message(status="running", source_id=args.scenario, scan_rate_hz=args.rate))
+    # Every message this run sends from here on carries the SAME session_id/source_id (see
+    # docs/architecture.md "Session and sequence management") -- `source.source_id` is the real
+    # identity ("simulated:<scenario>" or "stm32_hardware", from the SensorSource itself), never
+    # `args.scenario` (meaningless in hardware mode, and would silently mislabel a hardware run as
+    # whatever the CLI's --scenario default happens to be).
+    json_server.set_session(session_id=live_state_builder.session_id, source_id=source.source_id)
+    json_server.publish(build_system_status_message(
+        status="running", source_id=source.source_id, scan_rate_hz=args.rate, session_id=live_state_builder.session_id,
+    ))
 
     period_s = 1.0 / args.rate if args.rate > 0 else 0.0
     scan_index = 0
@@ -98,14 +124,37 @@ def run(args: argparse.Namespace, settings: Settings) -> None:
                     clustered = clusterer.cluster(cartesian)
                     classified = classifier.classify(clustered)
                     tracked = tracker.update(classified)
+                    # `getattr(..., None)` -- SimulatorSource has no `latest_radar_reading` at
+                    # all (LiDAR-only by construction); STM32Source has one but it stays `None`
+                    # until a real radar payload parser exists (Phase 8). Either way `fuse()`
+                    # with `None` is an exact passthrough -- see FusionEngine's own docstring.
+                    tracked = fusion_engine.fuse(tracked, getattr(source, "latest_radar_reading", None))
                     grid = mapper.update(cartesian)
                     assessment = engine.evaluate(tracked, vehicle_state=vehicle_state)
                     clearance = clearance_engine.evaluate(cartesian, vehicle_state=vehicle_state)
+                    # Built immediately after every real stage above has run, before publish/pacing
+                    # -- pipeline_processing_s is therefore pure stage-compute time, excluding
+                    # network I/O and the rate-limiting sleep below.
+                    pipeline_processing_s = time.perf_counter() - loop_start
+                    live_state = live_state_builder.build(
+                        tracked_scan=tracked, preprocessed_scan=clean, collision_assessment=assessment,
+                        clearance_assessment=clearance, pipeline_processing_s=pipeline_processing_s,
+                    )
                 except Exception as e:  # noqa: BLE001 -- deliberately broad: one bad scan must not kill the bridge, see module docstring
                     logger.exception("[STREAM] Pipeline error on scan %d, skipping.", scan_index)
-                    json_server.publish(build_error_message(code="PIPELINE_ERROR", message=str(e)))
+                    json_server.publish(build_error_message(
+                        code="PIPELINE_ERROR", message=str(e),
+                        session_id=live_state_builder.session_id, source_id=source.source_id,
+                    ))
                     scan_index += 1
                     continue
+
+                # live_state.events is most-recent-first (see LiveStateEvent's own docstring) --
+                # log only ones just recorded this scan, not the whole retained backlog every time.
+                for event in live_state.events:
+                    if event.sequence_number != tracked.sequence_number:
+                        break
+                    logger.info("[LIVE_STATE] %s event: %s", event.event_type, event.summary)
 
                 raw_server.publish_scan(cartesian.points)
 
@@ -114,7 +163,7 @@ def run(args: argparse.Namespace, settings: Settings) -> None:
                     tracked, collision_assessment=assessment, occupancy_grid=grid if include_map else None,
                     vehicle_state=vehicle_state, clearance_assessment=clearance, include_map=include_map, map_downsample=args.map_downsample,
                     point_mode=args.point_mode, raw_points=cartesian.points if args.point_mode != "none" else None,
-                    settings=settings,
+                    settings=settings, session_id=live_state_builder.session_id, live_state=live_state,
                 )
                 json_server.publish(message)
 

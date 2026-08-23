@@ -17,6 +17,7 @@ Typical usage:
 """
 
 from .association import associate
+from .history import TrackHistory
 from .kalman import KalmanFilter2D
 from .metrics import position_error, track_id_consistency, track_summary, velocity_error
 from .track import Track
@@ -25,6 +26,7 @@ from .tracker import ObjectTracker
 __all__ = [
     "ObjectTracker",
     "Track",
+    "TrackHistory",
     "KalmanFilter2D",
     "associate",
     "track_summary",

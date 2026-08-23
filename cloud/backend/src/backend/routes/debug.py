@@ -18,9 +18,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from ..deps import get_state
+from ..deps import get_hub, get_state
 from ..schemas import StreamStatusResponse
 from ..state import LatestState
+from ..ws import LiveBroadcastHub
 
 router = APIRouter(tags=["debug"])
 
@@ -54,13 +55,19 @@ def debug_live_frame(state: LatestState = Depends(get_state)) -> dict[str, Any] 
 
 
 @router.get("/debug/stream-status", response_model=StreamStatusResponse)
-def debug_stream_status(state: LatestState = Depends(get_state)) -> StreamStatusResponse:
+def debug_stream_status(
+    state: LatestState = Depends(get_state), hub: LiveBroadcastHub = Depends(get_hub),
+) -> StreamStatusResponse:
     """A denser, single-call summary of "is the live stream actually alive and what is it
     currently saying" -- deliberately including fields `GET /status` doesn't (`age_ms`, `risk`,
-    `object_count`, `track_count`, `last_frame_timestamp`) so this one endpoint answers "is the
-    problem backend/WebSocket/frontend/perception" without cross-referencing `/status` and
-    `/latest` by hand. Every value below is read straight off `LatestState`/`ConnectionInfo` --
-    none derived by a second calculation that could disagree with what the dashboard itself sees.
+    `object_count`, `track_count`, `last_frame_timestamp`, and -- per docs/architecture.md
+    "Session and sequence management" -- `session_id`, real measured `scan_rate_hz`,
+    `sensor_status`, `websocket_status`, and `latency_ms`) so this one endpoint answers "is the
+    problem backend/WebSocket/Edge/sensor" without cross-referencing `/status` and `/latest` by
+    hand. Every value below is read straight off `LatestState`/`ConnectionInfo`/the latest frame's
+    own payload -- none derived by a second calculation that could disagree with what the
+    dashboard itself sees, and every `None` below means "not knowable right now," never a
+    fabricated placeholder.
     """
     c = state.connection
     frame = state.latest_frame
@@ -70,6 +77,23 @@ def debug_stream_status(state: LatestState = Depends(get_state)) -> StreamStatus
     risk = (frame.get("risk") or {}).get("overall_risk") if frame else None
     object_count = len(frame.get("objects") or []) if frame else 0
     track_count = len(state.tracks_roster())
+
+    scan_rate_hz = c.measured_scan_rate_hz if c.measured_scan_rate_hz is not None else c.scan_rate_hz
+
+    latency_ms = None
+    if c.last_message_at is not None and c.last_transmission_timestamp is not None:
+        # Same-machine-clock assumption -- valid in this project's current scope, see
+        # docs/communication.md "Latency measurement". Wire transit only (transmission_timestamp,
+        # stamped at PerceptionStreamServer.publish() time, -> this backend actually receiving it).
+        latency_ms = round((c.last_message_at - c.last_transmission_timestamp) * 1000, 2)
+
+    sensor_ingestion_latency_ms = None
+    if c.last_message_at is not None and frame is not None and frame.get("timestamp") is not None:
+        # Sensor capture (the scan's OWN timestamp) -> this backend receiving it -- a larger,
+        # real window than latency_ms above, since it also includes however long the Edge's own
+        # pipeline (preprocessing through clearance) took to produce this frame in the first
+        # place, not just time on the wire.
+        sensor_ingestion_latency_ms = round((c.last_message_at - frame["timestamp"]) * 1000, 2)
 
     return StreamStatusResponse(
         connected=c.state == "connected",
@@ -82,4 +106,19 @@ def debug_stream_status(state: LatestState = Depends(get_state)) -> StreamStatus
         risk=risk,
         object_count=object_count,
         track_count=track_count,
+        session_id=c.session_id,
+        last_sequence=c.last_frame_id,
+        last_timestamp=frame.get("timestamp") if frame else None,
+        frame_age_ms=age_ms,
+        scan_rate_hz=scan_rate_hz,
+        measured_scan_rate_hz=c.measured_scan_rate_hz,
+        configured_scan_rate_hz=c.scan_rate_hz,
+        objects=object_count,
+        tracks=track_count,
+        backend_status="ok",
+        edge_status=c.state,
+        websocket_status="connected" if hub.client_count > 0 else "no_clients",
+        dashboard_clients_connected=hub.client_count,
+        latency_ms=latency_ms,
+        sensor_ingestion_latency_ms=sensor_ingestion_latency_ms,
     )

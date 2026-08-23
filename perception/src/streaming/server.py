@@ -87,6 +87,24 @@ class PerceptionStreamServer:
 
         self._frames_sent = 0
 
+        # Current run's identity, for HEARTBEAT messages this server builds and sends on its own
+        # timer (see _heartbeat_loop) -- PERCEPTION_FRAME/SYSTEM_STATUS/ERROR messages carry their
+        # own session_id/source_id because their caller (scripts/serve_unity_bridge.py) builds
+        # them directly; a HEARTBEAT is the one message type this class assembles internally, so
+        # it needs its own copy to stay consistent (see docs/architecture.md "Session and sequence
+        # management" -- every message a run sends carries the same session_id/source_id).
+        # `None` until the caller sets them (see set_session), which preserves this class's own
+        # "not tightly coupled to any one perception module" design -- it has no opinion on what a
+        # session_id *is*, only that it should echo whatever it was told.
+        self.session_id: str | None = None
+        self.source_id: str | None = None
+
+    def set_session(self, session_id: str | None, source_id: str | None) -> None:
+        """Called once by the composition root (`scripts/serve_unity_bridge.py`) right after a
+        `SensorSource` is connected -- see module-level callers for the exact sequencing."""
+        self.session_id = session_id
+        self.source_id = source_id
+
     @property
     def client_count(self) -> int:
         with self._clients_lock:
@@ -205,7 +223,10 @@ class PerceptionStreamServer:
             if not self._running:
                 return
             uptime = (time.time() - self._start_time) if self._start_time else 0.0
-            self.publish(build_heartbeat_message(uptime, self._frames_sent, self.client_count))
+            self.publish(build_heartbeat_message(
+                uptime, self._frames_sent, self.client_count,
+                session_id=self.session_id, source_id=self.source_id,
+            ))
 
 
 class RawLidarStreamServer:

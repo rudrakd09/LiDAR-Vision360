@@ -54,6 +54,13 @@ public class PerceptionTCPClient : MonoBehaviour, ILidarDataSource
     public event Action<HeartbeatData> OnHeartbeatReceived;
     public event Action<SystemStatusData> OnSystemStatusReceived;
     public event Action<ErrorData> OnErrorReceived;
+    /// <summary>Raised BEFORE any of the events above, exactly once per detected session boundary
+    /// (see docs/architecture.md "Session and sequence management") -- every stateful visualizer
+    /// (<see cref="Objects.TrackedObjectVisualizer"/> in particular: per-track_id views, "last
+    /// seen" bookkeeping) must clear its own session-scoped state here, the same way
+    /// `backend.state.LatestState.reset_for_new_session` does on the Python side, so a new
+    /// scenario/hardware session never shows a stale leftover from the previous one.</summary>
+    public event Action<string> OnSessionChanged;
 
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
 
@@ -61,6 +68,9 @@ public class PerceptionTCPClient : MonoBehaviour, ILidarDataSource
     /// before the first frame.</summary>
     public long LastFrameId { get; private set; } = -1;
     public int DuplicateOrOutOfOrderFramesDropped { get; private set; }
+    /// <summary>The session_id this client is currently tracking -- `null` until the first message
+    /// that carries one arrives (see <see cref="SessionValidator"/>). Exposed for a debug HUD.</summary>
+    public string CurrentSessionId { get; private set; }
 
     readonly Queue<MessageEnvelope> _incoming = new Queue<MessageEnvelope>();
     readonly object _lock = new object();
@@ -68,6 +78,7 @@ public class PerceptionTCPClient : MonoBehaviour, ILidarDataSource
     Thread _thread;
     volatile bool _running;
     long? _lastAcceptedFrameId;
+    string _supersededSessionId;
     float _lastMessageReceivedAt = -1f;
 
     void OnEnable()
@@ -170,6 +181,26 @@ public class PerceptionTCPClient : MonoBehaviour, ILidarDataSource
     void Dispatch(MessageEnvelope envelope)
     {
         if (envelope == null || string.IsNullOrEmpty(envelope.messageType)) return;
+
+        SessionStatus sessionStatus = SessionValidator.Classify(CurrentSessionId, _supersededSessionId, envelope.sessionId);
+        if (!SessionValidator.IsAcceptable(sessionStatus))
+        {
+            // "Old sessions must never overwrite new sessions" -- a stale message somehow still
+            // carrying an already-superseded session_id, rejected outright before touching any
+            // state at all (see docs/architecture.md "Session and sequence management").
+            Debug.LogWarning("PerceptionTCPClient: rejected message from superseded session_id=" + envelope.sessionId + " (current=" + CurrentSessionId + ").");
+            return;
+        }
+        if (sessionStatus == SessionStatus.New)
+        {
+            Debug.Log("PerceptionTCPClient: new session detected: " + CurrentSessionId + " -> " + envelope.sessionId + " (source_id=" + envelope.sourceId + ") -- resetting session state.");
+            _supersededSessionId = CurrentSessionId;
+            CurrentSessionId = envelope.sessionId;
+            _lastAcceptedFrameId = null; // this session's own frame_id sequence starts over -- see FrameIdValidator
+            LastFrameId = -1;
+            DuplicateOrOutOfOrderFramesDropped = 0;
+            OnSessionChanged?.Invoke(envelope.sessionId); // subscribers must clear their own session-scoped state before this method returns
+        }
 
         _lastMessageReceivedAt = Time.unscaledTime;
         if (State == ConnectionState.Stale) State = ConnectionState.Connected;

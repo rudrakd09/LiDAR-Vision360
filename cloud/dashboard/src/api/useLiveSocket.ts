@@ -7,6 +7,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { api, wsUrl } from "./client";
+import { classifyIncomingFrame, type AppliedFrameRef } from "../lib/sessionOrdering";
 import type { ConnectionStatus, LiveMessage, PerceptionFrameData } from "../types";
 
 // How often to re-fetch GET /api/status as a supplementary refresh of `backendConnection`.
@@ -37,6 +38,17 @@ export interface LiveSocketState {
    * last (e.g. a stable clearance reading) -- this counter moving is proof of new data arriving
    * even when the displayed numbers don't visibly change. */
   framesReceivedByClient: number;
+  /** `Date.now() - broadcast_at*1000` for the most recent frame -- the WebSocket leg only
+   * (backend broadcast -> this browser's own receipt), computed from a REAL timestamp the
+   * backend stamped at broadcast time (`ingestion.py`'s own `broadcast_at`), never assumed. See
+   * docs/architecture.md "Real-time performance monitoring". `null` until a frame carrying
+   * `broadcast_at` has arrived (an older backend predates the field). */
+  websocketLatencyMs: number | null;
+  /** `Date.now() - frame.timestamp*1000` for the most recent frame -- sensor capture all the way
+   * to this browser actually rendering it (pipeline processing + backend ingestion + WebSocket,
+   * combined), computed from the frame's own real capture timestamp vs. this tab's own real
+   * receipt time. `null` before any frame has ever arrived. */
+  endToEndLatencyMs: number | null;
 }
 
 const RECONNECT_DELAY_MS = 2000;
@@ -49,12 +61,23 @@ export function useLiveSocket(): LiveSocketState {
     lastError: null,
     lastFrameReceivedAt: null,
     framesReceivedByClient: 0,
+    websocketLatencyMs: null,
+    endToEndLatencyMs: null,
   });
 
   const shouldReconnect = useRef(true);
+  // The last frame this hook actually APPLIED (not just received) -- see
+  // `lib/sessionOrdering.classifyIncomingFrame`'s own docstring. Session/sequence management
+  // (docs/architecture.md): a duplicate/out-of-order message within the same session is rejected
+  // outright, and a genuinely new session_id is always applied (its own sequence starts over, so
+  // no ordering comparison against the previous session is meaningful) -- this is the browser's
+  // own third implementation of the exact rule `streaming.protocol.classify_frame_id` (Python)
+  // and `FrameIdValidator.cs` (Unity) already apply, not a new/different one invented here.
+  const lastApplied = useRef<AppliedFrameRef | null>(null);
 
   useEffect(() => {
     shouldReconnect.current = true;
+    lastApplied.current = null;
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -75,17 +98,34 @@ export function useLiveSocket(): LiveSocketState {
         }
 
         if (message.type === "snapshot") {
+          const snapshotFrame = message.data.latest_frame;
+          if (snapshotFrame) {
+            lastApplied.current = { sessionId: snapshotFrame.session_id ?? null, sequenceNumber: snapshotFrame.sequence_number };
+          }
           setState((prev) => ({
             ...prev,
             backendConnection: message.data.connection,
-            latestFrame: message.data.latest_frame ?? prev.latestFrame,
+            latestFrame: snapshotFrame ?? prev.latestFrame,
           }));
         } else if (message.type === "frame") {
+          const incoming: AppliedFrameRef = { sessionId: message.data.session_id ?? null, sequenceNumber: message.data.sequence_number };
+          const decision = classifyIncomingFrame(lastApplied.current, incoming);
+          if (decision === "reject") {
+            return; // duplicate/out-of-order within the current session -- never applied, current frame left exactly as-is
+          }
+          lastApplied.current = incoming;
+          const receivedAt = Date.now();
+          // Real measurements from real timestamps -- never displayed unless actually computed
+          // (see docs/architecture.md "Real-time performance monitoring": no fake 0ms).
+          const websocketLatencyMs = message.broadcast_at != null ? Math.max(0, receivedAt - message.broadcast_at * 1000) : null;
+          const endToEndLatencyMs = Math.max(0, receivedAt - message.data.timestamp * 1000);
           setState((prev) => ({
             ...prev,
             latestFrame: message.data,
-            lastFrameReceivedAt: Date.now(),
+            lastFrameReceivedAt: receivedAt,
             framesReceivedByClient: prev.framesReceivedByClient + 1,
+            websocketLatencyMs,
+            endToEndLatencyMs,
           }));
         } else if (message.type === "error") {
           setState((prev) => ({ ...prev, lastError: message.data.message }));

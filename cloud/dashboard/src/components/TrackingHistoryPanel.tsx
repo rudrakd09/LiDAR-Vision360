@@ -1,17 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import type { PerceptionFrameData } from "../types";
-import type { TrackBookkeepingEntry } from "../hooks/useTrackBookkeeping";
-import type { TrajectoryPoint } from "../hooks/useTrackTrajectories";
+import type { PerceptionFrameData, TrackedObjectData, TrajectoryPoint } from "../types";
 
-function formatTime(ms: number): string {
-  return new Date(ms).toLocaleTimeString();
+function formatTime(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleTimeString();
 }
 
 /** Small inline SVG trajectory plot -- x (forward) on the vertical axis (up = further ahead,
  * matching the vehicle-forward convention every other panel uses), y (lateral) on the horizontal
- * axis. Purely a rendering of already-real `TrajectoryPoint`s (client-observed from live WS
- * frames, see useTrackTrajectories) -- no coordinate math beyond fitting the existing points into
- * an SVG viewport. */
+ * axis. Purely a rendering of `TrackedObjectData.trajectory` -- real history the Edge's own
+ * `tracking.TrackHistory` already recorded (see docs/architecture.md "Dashboard and Unity as pure
+ * LiveState consumers"), no coordinate math beyond fitting the existing points into an SVG
+ * viewport. */
 function TrajectorySvg({ points }: { points: TrajectoryPoint[] }) {
   if (points.length < 2) return <div className="empty-state">Need at least 2 frames to plot a trajectory</div>;
 
@@ -44,25 +43,15 @@ function TrajectorySvg({ points }: { points: TrajectoryPoint[] }) {
   );
 }
 
-export function TrackingHistoryPanel({
-  frame,
-  bookkeeping,
-  trajectories,
-}: {
-  frame: PerceptionFrameData | null;
-  bookkeeping: Map<string, TrackBookkeepingEntry>;
-  trajectories: Map<string, TrajectoryPoint[]>;
-}) {
+/** TRACKING section: Track ID, Position, Velocity, Classification, Frames tracked,
+ * Trajectory/history -- every field read directly off `PerceptionFrameData.tracked_objects`
+ * (the Edge's own `LiveState.tracked_objects`), never re-derived client-side. */
+export function TrackingHistoryPanel({ frame }: { frame: PerceptionFrameData | null }) {
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
 
-  // Every track_id this client has ever recorded a trajectory point for, plus anything in the
-  // current frame -- lets a track that just dropped out of the current frame (but has real
-  // recorded history) stay selectable rather than vanishing the instant it's momentarily lost.
-  const availableTrackIds = useMemo(() => {
-    const ids = new Set<string>(trajectories.keys());
-    for (const obj of frame?.objects ?? []) if (obj.track_id) ids.add(obj.track_id);
-    return Array.from(ids);
-  }, [frame, trajectories]);
+  const trackedObjects: TrackedObjectData[] = frame?.tracked_objects ?? [];
+
+  const availableTrackIds = useMemo(() => trackedObjects.map((t) => t.track_id), [trackedObjects]);
 
   useEffect(() => {
     if (selectedTrackId != null && availableTrackIds.includes(selectedTrackId)) return;
@@ -79,60 +68,63 @@ export function TrackingHistoryPanel({
   if (availableTrackIds.length === 0) {
     return (
       <section className="panel" data-testid="tracking-history-panel">
-        <p className="panel-title">Tracking History</p>
+        <p className="panel-title">Tracking</p>
         <div className="empty-state">No objects currently tracked</div>
       </section>
     );
   }
 
-  const points = selectedTrackId ? trajectories.get(selectedTrackId) ?? [] : [];
-  const book = selectedTrackId ? bookkeeping.get(selectedTrackId) : undefined;
-  const liveObj = frame?.objects.find((o) => o.track_id === selectedTrackId) ?? null;
-  const current = points[points.length - 1];
+  const selected = trackedObjects.find((t) => t.track_id === selectedTrackId) ?? null;
+  const points = selected?.trajectory ?? [];
   const previous = points.length > 1 ? points[points.length - 2] : null;
 
   return (
     <section className="panel" data-testid="tracking-history-panel">
-      <p className="panel-title">Tracking History</p>
+      <p className="panel-title">Tracking</p>
 
       <div className="track-history-controls">
         <label htmlFor="track-history-select">Track:</label>
         <select id="track-history-select" value={selectedTrackId ?? ""} onChange={(e) => setSelectedTrackId(e.target.value)}>
           {availableTrackIds.map((id) => (
-            <option key={id} value={id}>
-              #{id} {liveObj && id === selectedTrackId ? "" : availableTrackIds.includes(id) && !frame?.objects.some((o) => o.track_id === id) ? "(not in current frame)" : ""}
-            </option>
+            <option key={id} value={id}>#{id}</option>
           ))}
         </select>
-        {!liveObj && selectedTrackId && <span className="empty-state" style={{ padding: 0 }}>&nbsp;-- not in the current frame (showing last known history)</span>}
       </div>
 
-      {current ? (
+      {selected ? (
         <>
           <div className="summary-row" style={{ marginTop: 10 }}>
             <div className="summary-item">
+              <div className="summary-label">Track ID</div>
+              <div className="summary-value">#{selected.track_id}</div>
+            </div>
+            <div className="summary-item">
+              <div className="summary-label">Classification</div>
+              <div className="summary-value">{selected.classification.replace(/_/g, " ")}</div>
+            </div>
+            <div className="summary-item">
               <div className="summary-label">First Seen</div>
-              <div className="summary-value">{book ? formatTime(book.firstSeenAt) : "—"}</div>
+              <div className="summary-value">{selected.first_seen != null ? formatTime(selected.first_seen) : "—"}</div>
             </div>
             <div className="summary-item">
               <div className="summary-label">Last Seen</div>
-              <div className="summary-value">{book ? formatTime(book.lastSeenAt) : "—"}</div>
+              <div className="summary-value">{selected.last_seen != null ? formatTime(selected.last_seen) : "—"}</div>
             </div>
             <div className="summary-item">
-              <div className="summary-label">Frames Tracked (client-observed)</div>
-              <div className="summary-value">{book?.framesTracked ?? "—"}</div>
+              <div className="summary-label">Frames Tracked</div>
+              <div className="summary-value">{selected.frames_tracked ?? "—"}</div>
             </div>
             <div className="summary-item">
-              <div className="summary-label">Current Position</div>
-              <div className="summary-value">x={current.x.toFixed(2)}, y={current.y.toFixed(2)}</div>
+              <div className="summary-label">Position</div>
+              <div className="summary-value">x={selected.x.toFixed(2)}, y={selected.y.toFixed(2)}</div>
             </div>
             <div className="summary-item">
               <div className="summary-label">Previous Position</div>
               <div className="summary-value">{previous ? `x=${previous.x.toFixed(2)}, y=${previous.y.toFixed(2)}` : "—"}</div>
             </div>
             <div className="summary-item">
-              <div className="summary-label">Current Velocity</div>
-              <div className="summary-value">{current.vx != null && current.vy != null ? `vx=${current.vx.toFixed(2)}, vy=${current.vy.toFixed(2)} m/s` : "—"}</div>
+              <div className="summary-label">Velocity</div>
+              <div className="summary-value">{selected.velocity ? `vx=${selected.velocity.vx.toFixed(2)}, vy=${selected.velocity.vy.toFixed(2)} m/s` : "—"}</div>
             </div>
           </div>
 
@@ -154,8 +146,8 @@ export function TrackingHistoryPanel({
                 </thead>
                 <tbody>
                   {points.slice(-10).reverse().map((p) => (
-                    <tr key={p.frameId}>
-                      <td>{p.frameId}</td>
+                    <tr key={`${p.frame_id}-${p.timestamp}`}>
+                      <td>{p.frame_id}</td>
                       <td>{p.x.toFixed(2)}</td>
                       <td>{p.y.toFixed(2)}</td>
                       <td>{p.distance.toFixed(2)} m</td>

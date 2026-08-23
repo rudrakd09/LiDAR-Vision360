@@ -4,6 +4,7 @@ during these tests) and seeds `LatestState` directly to make responses determini
 """
 
 import socket
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -133,6 +134,24 @@ class TestDebugEndpoints:
         assert body["track_count"] == 0
         assert body["risk"] is None
         assert body["age_ms"] is None
+        # Session/sequence management fields (docs/architecture.md) -- all "not knowable yet"
+        # before any frame has ever arrived, never a fabricated placeholder.
+        assert body["session_id"] is None
+        assert body["last_sequence"] is None
+        assert body["last_timestamp"] is None
+        assert body["frame_age_ms"] is None
+        assert body["scan_rate_hz"] is None
+        assert body["measured_scan_rate_hz"] is None
+        assert body["objects"] == 0
+        assert body["tracks"] == 0
+        assert body["backend_status"] == "ok"  # this endpoint responding at all IS the real fact
+        # The fixture's real PerceptionIngestor is racing a doomed connect() against an unused
+        # port in the background (see this file's own module docstring) -- either "disconnected"
+        # or a still-in-flight "connecting" is a correct answer this early, never "connected".
+        assert body["edge_status"] in ("disconnected", "connecting")
+        assert body["websocket_status"] == "no_clients"
+        assert body["dashboard_clients_connected"] == 0
+        assert body["latency_ms"] is None
 
     def test_stream_status_reflects_seeded_frame(self, client):
         state = client.app.state.latest_state
@@ -157,6 +176,36 @@ class TestDebugEndpoints:
         assert body["risk"] == "critical"
         assert body["object_count"] == 2
         assert body["age_ms"] is not None and body["age_ms"] >= 0
+        # Same values, exact literal field names this task's own spec asks for.
+        assert body["last_sequence"] == 42
+        assert body["last_timestamp"] == 555.0
+        assert body["frame_age_ms"] == body["age_ms"]
+        assert body["objects"] == 2
+        assert body["tracks"] == 2
+
+    def test_stream_status_session_and_scan_rate_and_latency(self, client):
+        """Session/sequence-management fields (docs/architecture.md) once a real session with a
+        real Edge-measured scan rate and a real transmission_timestamp exist -- every value below
+        is read straight off ConnectionInfo, none fabricated."""
+        state = client.app.state.latest_state
+        state.reset_for_new_session(session_id="edge-session-123", source_id="simulated:08_approaching_obstacle")
+        state.connection.state = "connected"
+        state.connection.measured_scan_rate_hz = 9.87  # what LiveState.performance_metrics actually measured
+        state.connection.scan_rate_hz = 10.0  # SYSTEM_STATUS's own configured-target value
+        now = time.time()
+        state.connection.last_transmission_timestamp = now - 0.005  # 5ms "on the wire"
+        state.record_frame({"objects": [], "risk": None, "clearance": None, "timestamp": now}, frame_id=0)
+
+        resp = client.get("/debug/stream-status")
+        body = resp.json()
+        assert body["session_id"] == "edge-session-123"
+        assert body["source_id"] == "simulated:08_approaching_obstacle"
+        assert body["measured_scan_rate_hz"] == 9.87
+        assert body["configured_scan_rate_hz"] == 10.0
+        assert body["scan_rate_hz"] == 9.87  # prefers the real measured value over the configured one
+        assert body["backend_status"] == "ok"
+        assert body["edge_status"] == "connected"
+        assert body["latency_ms"] is not None and body["latency_ms"] >= 0
 
     def test_api_prefixed_debug_routes_also_exist(self, client):
         # Same double-mount convention every other route module gets (see main.py's own comment).

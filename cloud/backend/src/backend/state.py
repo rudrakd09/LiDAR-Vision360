@@ -30,11 +30,22 @@ class ConnectionInfo:
     port: int = 0
     connected_at: float | None = None
     last_message_at: float | None = None
-    frames_received: int = 0
-    duplicate_or_out_of_order_dropped: int = 0
+    frames_received: int = 0  # cumulative for this backend PROCESS's lifetime -- survives reconnects, unchanged behavior (see session_frames_received below for the per-session count)
+    duplicate_or_out_of_order_dropped: int = 0  # same "whole process lifetime" scope as frames_received
     last_frame_id: int | None = None
     source_id: str | None = None
-    scan_rate_hz: float | None = None
+    scan_rate_hz: float | None = None  # from SYSTEM_STATUS -- the *configured target* rate, sent once per run (can go stale -- see docs/cloud.md "Known limitations")
+
+    # --- Session/sequence management (see docs/architecture.md "Session and sequence
+    # management") -- the Edge-minted identity, distinct from `backend.state.LatestState.
+    # current_session_id` (this backend's OWN DB SessionRecord primary key, one per ingestion TCP
+    # connection -- a separate bookkeeping concept that continues to exist unchanged). This is the
+    # id `GET /debug/stream-status`/`GET /api/status` report as `session_id`, and the one
+    # `PerceptionIngestor` compares incoming messages against to detect a session boundary. ---
+    session_id: str | None = None
+    session_frames_received: int = 0  # resets to 0 every new-session boundary -- see LatestState.reset_for_new_session
+    last_transmission_timestamp: float | None = None  # envelope's own transmission_timestamp of the most recent message -- for latency_ms, see routes/debug.py
+    measured_scan_rate_hz: float | None = None  # from the Edge's own, per-scan-measured LiveState.performance_metrics.measured_scan_rate_hz -- real, not the possibly-stale SYSTEM_STATUS value above
 
 
 def compute_session_status(connection: ConnectionInfo, now: float, stale_threshold_s: float) -> str:
@@ -71,12 +82,47 @@ class LatestState:
         self.connection = ConnectionInfo()
         self.current_session_id: str | None = None
 
+    def reset_for_new_session(self, session_id: str | None, source_id: str | None) -> None:
+        """Called the moment a new session boundary is detected (see `backend.ingestion.
+        PerceptionIngestor`) -- either a fresh TCP reconnect (session_id/source_id not known yet,
+        both `None`: the previous producer's socket just dropped, and nothing about the next one
+        -- new scenario, hardware, or the same scenario restarted -- is known yet) or a genuine
+        new `session_id` observed on an already-open connection (a defensive backstop for "old
+        sessions must never overwrite new sessions" -- see `PerceptionIngestor._dispatch`).
+
+        Clears every piece of this-session state so a caller reading ANY of `latest_frame`/
+        `tracks_roster`/`track_history` immediately after this call sees a clean slate, never the
+        previous session's data -- this is what makes `GET /debug/live-frame` (and `GET
+        /api/latest`, and `/ws/live`'s next snapshot) never serve a stale frame across a scenario
+        switch, even during the brief window before the new session's first real frame arrives.
+        Objects/tracks/tracking history/TTC/clearance/risk all live inside `_latest_frame` and the
+        per-track dicts below -- clearing those clears all of them in one place, since none of
+        them has a separate cache anywhere else in this class. The event timeline is intentionally
+        NOT touched here -- it is DB-backed and already session-scoped by `LatestState.
+        current_session_id` (see routes/events.py's own default-session-filter), which updates
+        independently, via `PerceptionIngestor._open_session`, the moment this same reconnect
+        opens its own new `SessionRecord`.
+        """
+        with self._lock:
+            self._frames.clear()
+            self._latest_frame = None
+            self._track_last_seen.clear()
+            self._track_first_seen.clear()
+            self._track_frame_count.clear()
+            self._track_history.clear()
+            self.connection.session_id = session_id
+            self.connection.source_id = source_id
+            self.connection.session_frames_received = 0
+            self.connection.last_frame_id = None
+            self.connection.measured_scan_rate_hz = None
+
     def record_frame(self, frame_data: dict[str, Any], frame_id: int | None) -> None:
         now = time.time()
         with self._lock:
             self._frames.append(frame_data)
             self._latest_frame = frame_data
             self.connection.frames_received += 1
+            self.connection.session_frames_received += 1
             self.connection.last_frame_id = frame_id
             self.connection.last_message_at = now
 
@@ -216,4 +262,7 @@ def _connection_dict(info: ConnectionInfo, session_status: str) -> dict[str, Any
         "source_id": info.source_id,
         "scan_rate_hz": info.scan_rate_hz,
         "session_status": session_status,
+        "session_id": info.session_id,
+        "session_frames_received": info.session_frames_received,
+        "measured_scan_rate_hz": info.measured_scan_rate_hz,
     }

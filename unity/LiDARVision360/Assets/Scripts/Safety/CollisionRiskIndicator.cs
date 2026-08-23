@@ -22,6 +22,8 @@ public class CollisionRiskIndicator : MonoBehaviour
     public Color safeColor = Color.green;
     public Color warningColor = new Color(1f, 0.6f, 0f);
     public Color criticalColor = Color.red;
+    [Tooltip("Shown when no risk data exists yet -- before the first frame, or for a bridge run without the collision stage wired in. Deliberately distinct from safeColor: this indicator has never actually confirmed the vehicle is safe, and must never look identical to one that has (see docs/architecture.md \"Dashboard and Unity as pure LiveState consumers\" -- never invent a value for missing data).")]
+    public Color unknownColor = Color.gray;
 
     [Header("Critical pulse")]
     public bool pulseOnCritical = true;
@@ -30,7 +32,9 @@ public class CollisionRiskIndicator : MonoBehaviour
     MaterialPropertyBlock _propertyBlock;
     static readonly int ColorPropertyId = Shader.PropertyToID("_Color");
 
-    public string CurrentRiskLevel { get; private set; } = "safe";
+    /// <summary>"safe" | "warning" | "critical" | "unknown" -- "unknown" (not "safe") until a
+    /// real `risk` field has actually been received; see HandleFrame.</summary>
+    public string CurrentRiskLevel { get; private set; } = "unknown";
 
     void Awake()
     {
@@ -49,10 +53,13 @@ public class CollisionRiskIndicator : MonoBehaviour
 
     void HandleFrame(PerceptionFrameData frame)
     {
-        // Missing risk data (e.g. the collision stage isn't wired into this bridge run) defaults
-        // to SAFE rather than leaving a stale CRITICAL indicator showing -- never crash on the
-        // missing field. See docs/unity.md "Data validation".
-        CurrentRiskLevel = frame?.risk?.overallRisk ?? "safe";
+        // Missing risk data (e.g. the collision stage isn't wired into this bridge run, or no
+        // frame has arrived yet) is "unknown", NEVER fabricated as SAFE -- a vehicle-body safety
+        // indicator showing green with no actual confirmation behind it is exactly the kind of
+        // invented value this project's own rules forbid (see docs/architecture.md "Dashboard and
+        // Unity as pure LiveState consumers"). Never crashes on the missing field either way --
+        // see docs/unity.md "Data validation".
+        CurrentRiskLevel = frame?.risk?.overallRisk ?? "unknown";
     }
 
     void Update()
@@ -70,9 +77,10 @@ public class CollisionRiskIndicator : MonoBehaviour
     {
         switch (risk)
         {
+            case "safe": return safeColor;
             case "warning": return warningColor;
             case "critical": return criticalColor;
-            default: return safeColor;
+            default: return unknownColor; // "unknown", or any unrecognized value -- never silently treated as safe
         }
     }
 

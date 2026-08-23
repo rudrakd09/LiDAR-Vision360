@@ -24,6 +24,13 @@ public class MessageEnvelope
 {
     [JsonProperty("protocol_version")] public string protocolVersion;
     [JsonProperty("message_type")] public string messageType; // "PERCEPTION_FRAME" | "HEARTBEAT" | "SYSTEM_STATUS" | "ERROR"
+    // Added for session/sequence management (see docs/architecture.md "Session and sequence
+    // management") -- minted once per `scripts/serve_unity_bridge.py` run
+    // (`pipeline.LiveStateBuilder.session_id`), carried on EVERY message type from that run, not
+    // just PERCEPTION_FRAME. `null` for a producer/message that predates this field -- see
+    // SessionValidator, which degrades to frame_id-only validation in that case, same as before.
+    [JsonProperty("session_id")] public string sessionId;
+    [JsonProperty("source_id")] public string sourceId;
     [JsonProperty("frame_id")] public long? frameId;            // null for non-PERCEPTION_FRAME message types
     [JsonProperty("timestamp")] public double timestamp;
     [JsonProperty("transmission_timestamp")] public double transmissionTimestamp;
@@ -62,6 +69,68 @@ public class PerceptionObjectData
     [JsonProperty("track_age")] public int? trackAge;
     [JsonProperty("track_hits")] public int? trackHits;
     [JsonProperty("track_misses")] public int? trackMisses;
+}
+
+/// <summary>One trajectory sample -- copied verbatim from the scan it was observed, never
+/// re-derived/interpolated. See `models.live_state.TrajectoryPoint` on the Python side.</summary>
+[Serializable]
+public class TrajectoryPointData
+{
+    [JsonProperty("frame_id")] public long frameId;
+    [JsonProperty("timestamp")] public double timestamp;
+    [JsonProperty("x")] public float x;
+    [JsonProperty("y")] public float y;
+    [JsonProperty("vx")] public float? vx;
+    [JsonProperty("vy")] public float? vy;
+    [JsonProperty("distance")] public float distance;
+    [JsonProperty("classification")] public string classification;
+    [JsonProperty("tracking_state")] public string trackingState;
+}
+
+/// <summary>One tracked object's FULL Edge-computed view -- see `models.live_state.
+/// TrackedObjectState` on the Python side. This is what any Unity script displaying per-track
+/// detail (classification/TTC/risk/trajectory/sensor source) must read directly -- never
+/// re-joined or re-derived here (see docs/architecture.md "Dashboard and Unity as pure LiveState
+/// consumers"). Distinct from <see cref="PerceptionObjectData"/> (this scan's raw object, no
+/// history) -- both arrive on every `PERCEPTION_FRAME`.</summary>
+[Serializable]
+public class TrackedObjectData
+{
+    [JsonProperty("track_id")] public string trackId;
+    [JsonProperty("classification")] public string classification;
+    [JsonProperty("confidence")] public float confidence;
+    [JsonProperty("x")] public float x;
+    [JsonProperty("y")] public float y;
+    [JsonProperty("distance")] public float distance;
+    [JsonProperty("velocity")] public VelocityData velocity;
+    // Always "lidar" in this project's current 2D-LiDAR-only scope -- a real, structurally-true
+    // label (exactly one sensor modality exists), not a fabricated measurement.
+    [JsonProperty("sensor_source")] public string sensorSource;
+    [JsonProperty("first_seen")] public double? firstSeen;
+    [JsonProperty("last_seen")] public double? lastSeen;
+    [JsonProperty("frames_tracked")] public int? framesTracked;
+    [JsonProperty("trajectory")] public List<TrajectoryPointData> trajectory;
+    [JsonProperty("ttc")] public float? ttc;
+    [JsonProperty("risk")] public string risk; // "safe" | "warning" | "critical" | null
+    [JsonProperty("tracking_state")] public string trackingState;
+    [JsonProperty("movement_state")] public string movementState;
+}
+
+/// <summary>One collision-risk/clearance/track-lifecycle transition recorded THIS scan -- see
+/// `models.live_state.LiveStateEvent`/`serialization.unity_protocol.build_events_payload`'s own
+/// docstring (only this scan's own new events are sent per-frame, not the full retained backlog --
+/// a consumer wanting a running timeline accumulates these itself, same pattern the dashboard's
+/// own `hooks/useLiveEvents.ts` uses).</summary>
+[Serializable]
+public class LiveEventData
+{
+    [JsonProperty("event_type")] public string eventType; // "collision" | "clearance" | "track_created" | "track_lost" | "tracking_state_changed" | "ttc_change"
+    [JsonProperty("sequence_number")] public long sequenceNumber;
+    [JsonProperty("timestamp")] public double timestamp;
+    [JsonProperty("track_id")] public string trackId;
+    [JsonProperty("previous_value")] public string previousValue;
+    [JsonProperty("new_value")] public string newValue;
+    [JsonProperty("summary")] public string summary;
 }
 
 [Serializable]
@@ -167,6 +236,10 @@ public class ConfigData
     [JsonProperty("collision_warning_ttc_s")] public float collisionWarningTtcS;
     [JsonProperty("collision_critical_ttc_s")] public float collisionCriticalTtcS;
     [JsonProperty("lidar_range_max_m")] public float lidarRangeMaxM;
+    // "simulation" | "hardware" -- Settings.data_source (see docs/architecture.md "Sensor source
+    // abstraction" / "Session and sequence management"). Null for an older payload that predates
+    // this field.
+    [JsonProperty("data_source")] public string dataSource;
 }
 
 /// <summary>The `data` payload of a `PERCEPTION_FRAME` message (i.e. `envelope.data` once
@@ -178,17 +251,43 @@ public class ConfigData
 [Serializable]
 public class PerceptionFrameData
 {
+    // See docs/architecture.md "Session and sequence management" -- minted once per
+    // `scripts/serve_unity_bridge.py` run, same value the envelope itself now also carries
+    // (MessageEnvelope.sessionId). Null for an older payload that predates this field.
+    [JsonProperty("session_id")] public string sessionId;
     [JsonProperty("timestamp")] public double timestamp;
     [JsonProperty("scan_id")] public string scanId;
     [JsonProperty("sequence_number")] public long sequenceNumber;
     [JsonProperty("source_id")] public string sourceId;
     [JsonProperty("objects")] public List<PerceptionObjectData> objects;
+    // The richer, history-joined per-track view -- see TrackedObjectData's own docstring. Null
+    // for an older payload that predates this field; the live backend always sends it (as an
+    // empty list when nothing is currently tracked, never null for "nothing tracked").
+    [JsonProperty("tracked_objects")] public List<TrackedObjectData> trackedObjects;
+    // Transitions recorded THIS scan only -- see LiveEventData's own docstring.
+    [JsonProperty("events")] public List<LiveEventData> events;
     [JsonProperty("risk")] public RiskData risk;                 // null if the collision stage wasn't wired into this bridge run
     [JsonProperty("clearance")] public ClearanceData clearance;   // null if the clearance stage wasn't wired into this bridge run (see docs/collision.md "Directional clearance" -- Phase 10, implemented)
     [JsonProperty("vehicle")] public VehicleData vehicle;
     [JsonProperty("config")] public ConfigData config;              // vehicle geometry + risk thresholds -- always present, see ConfigData
     [JsonProperty("map")] public OccupancyMapData map;             // null on scans that don't include a map update (see scripts/serve_unity_bridge.py --map-every-n-scans)
     [JsonProperty("points")] public List<RawPointData> points;     // null unless explicitly requested (see scripts/serve_unity_bridge.py --include-points, off by default)
+    // Real, per-scan-measured performance figures (see docs/architecture.md "Session and
+    // sequence management", models.live_state.PerformanceMetrics) -- null for an older payload
+    // that predates this field.
+    [JsonProperty("performance_metrics")] public PerformanceMetricsData performanceMetrics;
+}
+
+/// <summary>Real, directly-measured performance figures for this scan -- never a fabricated
+/// throughput/rate figure this process doesn't actually measure. See
+/// `models.live_state.PerformanceMetrics`'s own docstring on the Python side.</summary>
+[Serializable]
+public class PerformanceMetricsData
+{
+    [JsonProperty("pipeline_processing_ms")] public float? pipelineProcessingMs;
+    [JsonProperty("measured_scan_interval_s")] public float? measuredScanIntervalS;
+    [JsonProperty("measured_scan_rate_hz")] public float? measuredScanRateHz;
+    [JsonProperty("scans_processed")] public int scansProcessed;
 }
 
 /// <summary>The `data` payload of a `HEARTBEAT` message -- sent on `streaming_heartbeat_interval_s`

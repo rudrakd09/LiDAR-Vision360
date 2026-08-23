@@ -32,4 +32,6 @@ def status(state: LatestState = Depends(get_state), hub: LiveBroadcastHub = Depe
         last_frame_id=c.last_frame_id, source_id=c.source_id, scan_rate_hz=c.scan_rate_hz,
         dashboard_clients_connected=hub.client_count,
         session_status=state.session_status(settings.backend_session_stale_threshold_s),
+        session_id=c.session_id, session_frames_received=c.session_frames_received,
+        measured_scan_rate_hz=c.measured_scan_rate_hz,
     )
