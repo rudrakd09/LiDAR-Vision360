@@ -129,6 +129,246 @@ grid is a 2D LiDAR occupancy map, not a true 3D map -- consistent with the rest 
 2D-LiDAR scope. **`collision` is a prototype collision-awareness system, not a certified
 automotive safety system** -- see docs/collision.md "Status".
 
+## Sensor source abstraction
+
+**Status: implemented (sensor-input-abstraction groundwork), no perception algorithm changed.**
+Formalizes, under one explicit vocabulary, the seam Phase 0 already established
+(`datasources.LiDARDataSource` -> `models.scan.ScanFrame`) so a caller never needs to know or care
+whether frames came from the simulator or real STM32 hardware:
+
+```
+simulator.SimulatorSource ──┐
+                             ├──>  SensorFrame  ──>  preprocessing.Preprocessor.process() ──> ...
+datasources.STM32Source ────┘      (== ScanFrame)     (existing pipeline, unchanged)
+```
+
+- **`SensorFrame`** (`perception/src/datasources/base.py`) -- a plain alias of `models.scan.
+  ScanFrame`, not a new/parallel model. There is exactly one canonical "one full 360° sweep"
+  schema; every existing pipeline stage already accepts it unchanged.
+- **`SensorSource`** (same file) -- a plain alias of `datasources.LiDARDataSource`. Same
+  `connect()`/`disconnect()`/`read_scan() -> SensorFrame`/`is_connected()` contract as before;
+  `issubclass(X, SensorSource)` and `issubclass(X, LiDARDataSource)` always agree.
+- **`simulator.SimulatorSource`** (`simulator/src/simulator/sensor_source.py`) -- wraps
+  `scenarios.make_data_source(scenario)` + the existing `SimulatedLiDARDataSource` behind the
+  `SensorSource` interface. Delegates every method; adds no new frame-construction logic. All 10
+  predefined scenarios (`simulator/scenarios/*.json`) work through it exactly as they did through
+  `make_data_source` directly -- see `simulator/tests/test_sensor_source.py`.
+- **`datasources.STM32Source`** (`perception/src/datasources/stm32_source.py`, composing
+  `perception/src/datasources/stm32/`) -- **Phase 8: architecture implemented, protocol not yet
+  known.** Real connection management (`connection_manager.STM32ConnectionManager`, with
+  reconnect-with-backoff), byte-stream framing (`framing.FrameCodec`, delimited or fixed-length),
+  CRC/checksum validation (`crc`, several standard algorithms), sequence-number/dropped-frame
+  detection (`sequence.SequenceValidator`), per-channel health tracking (`health.HealthMonitor`),
+  and a `LiDARMessageParser`/`RadarMessageParser` interface pair (`parsers.py`) -- but `connect()`
+  raises `STM32ConfigurationError` (never opens a port, never falls back to simulated data) until
+  every wire-protocol field (framing, byte order, message-type IDs, CRC algorithm, scaling,
+  timestamp format) is actually configured, because PROJECT_SPECIFICATION.md explicitly forbids
+  inventing them ahead of the real hardware spec. See docs/hardware-integration.md "Hardware
+  integration checklist" for exactly what's still needed. A parsed R121 radar reading is exposed
+  via `STM32Source.latest_radar_reading` (`models.radar.RadarReading`) and consumed by
+  `fusion.FusionEngine` (Phase 9, see docs/fusion.md) -- authorized as an explicit, deliberate
+  reversal of this prototype's earlier "sensor fusion out of scope" stance, tested only against
+  synthetic `RadarReading`s (real R121 fusion is not validated; the CAN protocol is still
+  unknown).
+- **`scripts/sensor_source.py::get_sensor_source()`** -- the composition-root factory
+  `scripts/serve_unity_bridge.py` calls instead of constructing either source directly. Reads
+  `Settings.data_source` (`DATA_SOURCE` / env var `LIDAR_DATA_SOURCE`, default `"simulation"`; see
+  `.env.example`) and returns `SimulatorSource` or `STM32Source` accordingly. Lives in `scripts/`,
+  not `perception/`, because it is the one place allowed to depend on both `perception` and
+  `simulator` -- `perception` must never import `simulator` (see "Why `perception` and `simulator`
+  are separate top-level projects" below), and `STM32Source` lives in `perception` since hardware
+  has nothing to do with the simulator package.
+
+Nothing downstream of `SensorFrame` (preprocessing onward, tracking, collision, clearance,
+streaming, the cloud backend, the dashboard, Unity) changed to support this -- they already only
+ever depended on `ScanFrame`'s shape, never on which concrete data source produced it.
+
+## Session and sequence management
+
+**Status: implemented.** Formalizes "who is the current run" as an explicit, wire-carried
+identity, so the Edge computer is unambiguously the single source of truth for it -- no downstream
+consumer (backend, dashboard, Unity) invents or infers a session boundary of its own.
+
+```
+pipeline.LiveStateBuilder.session_id      (minted once per scripts/serve_unity_bridge.py run)
+    -> streaming.protocol._envelope       (session_id + source_id at the envelope level, EVERY
+                                            message type -- PERCEPTION_FRAME/HEARTBEAT/
+                                            SYSTEM_STATUS/ERROR alike, not just frames)
+    -> backend.ingestion.PerceptionIngestor._apply_session_boundary_if_needed
+           - same session_id            -> dispatch normally
+           - new session_id             -> LatestState.reset_for_new_session() FIRST, then dispatch
+           - a PREVIOUSLY-superseded id -> rejected outright, never applied
+    -> backend.state.LatestState (latest_frame/tracks/tracking-history/session_frames_received
+       all cleared by reset_for_new_session -- not left to be gradually overwritten by new frames)
+    -> GET /debug/live-frame, GET /api/latest, /ws/live snapshot -- never serve a stale
+       previous-session frame, even during the brief window before the new session's first
+       real frame arrives
+    -> dashboard useLiveSocket (lib/sessionOrdering.classifyIncomingFrame) + Unity
+       PerceptionTCPClient (SessionValidator) -- each independently rejects a message from an
+       already-superseded session on its own merits, the same defense-in-depth pattern this
+       project already applies to frame_id (streaming.protocol.classify_frame_id /
+       FrameIdValidator.cs) -- three languages, one rule, kept in sync deliberately.
+```
+
+**Every run has all four identity fields** (`session_id`, `source_id`, `timestamp`,
+`sequence_number`) on every message: `source_id` is `f"simulated:{scenario_id}"` for a simulation
+run (`simulator.SimulatorSource`) or `Settings.hardware_source_id` (`"stm32_hardware"` by default)
+for a hardware run (`datasources.STM32Source`) -- never the CLI's raw `--scenario` string, which
+isn't meaningful in hardware mode (a bug this fixed: `scripts/serve_unity_bridge.py` previously
+labelled `SYSTEM_STATUS.source_id` from `args.scenario` directly).
+
+**Frame counters, split by scope, deliberately**: `ConnectionInfo.frames_received`/
+`duplicate_or_out_of_order_dropped` stay cumulative for the whole backend *process* lifetime
+(existing, tested behavior -- some diagnostics genuinely want "how many messages has this backend
+process ever ingested, across every reconnect"); `session_frames_received` resets to 0 on every
+new session boundary and is what answers "how many frames has the CURRENT session sent." Both are
+real counters, never conflated.
+
+**`GET /debug/stream-status`** (`backend/routes/debug.py`) is the single-call summary of all of
+the above: `session_id`, `source_id`, `last_sequence`, `last_timestamp`, `frame_age_ms`, a
+`scan_rate_hz` that prefers the Edge's own real per-scan measurement
+(`performance_metrics.measured_scan_rate_hz`, from `LiveStateBuilder`) over the possibly-stale
+SYSTEM_STATUS configured-target value, `objects`/`tracks`, `backend_status`, `edge_status`
+(backend<->bridge TCP state), `websocket_status`/`dashboard_clients_connected`, dropped-frame
+count, and `latency_ms` (same-machine-clock `last_message_at - last_transmission_timestamp`, see
+docs/communication.md "Latency measurement").
+
+**Sensor status and performance metrics are now on the wire too** -- `PERCEPTION_FRAME.data.
+sensor_status` (`{"lidar": {...real...}, "radar": null}` -- `null` because no radar sensor exists
+in this project, never a fabricated reading) and `data.performance_metrics`
+(`pipeline_processing_ms`/`measured_scan_interval_s`/`measured_scan_rate_hz`/`scans_processed`,
+all real, directly measured by `scripts/serve_unity_bridge.py` around its own pipeline stage
+calls) -- both sourced from `LiveState`, both additive (older consumers that don't know these keys
+exist simply ignore them). The dashboard (`useMeasuredScanRate`) and Unity (`HUDController`) now
+prefer this real, Edge-measured rate over their own client-side arrival-timing estimate, which
+remains only as a fallback/cross-check for a payload that predates the field.
+
+## Dashboard and Unity as pure LiveState consumers
+
+**Status: implemented.** Dashboard and Unity render `LiveState` (via the wire); neither
+detects, classifies, tracks, or computes TTC/clearance/risk. This section covers what changed to
+make that literally true end-to-end, not just true of the perception pipeline itself.
+
+```
+Edge (pipeline.LiveStateBuilder)
+    |
+    v
+LiveState.tracked_objects   -- track_id, classification, confidence, x/y, velocity,
+                                sensor_source, first_seen/last_seen/frames_tracked, trajectory,
+                                ttc, risk -- ALL joined/computed at the Edge, by track_id
+LiveState.events            -- track_created/track_lost/tracking_state_changed/ttc_change/
+                                collision/clearance transitions, detected at the Edge
+    |
+    v  (serialization.unity_protocol.build_frame_message -- additive `data.tracked_objects`/
+    |   `data.events` fields; `data.events` carries only THIS scan's own new events, not the
+    |   full retained backlog -- see build_events_payload's own docstring)
+    v
+   ┌──────────────────────┬──────────────────────┐
+Dashboard (/ws/live)                          Unity (port 5006, PerceptionTCPClient)
+   │                                              │
+TrackedObjectsTable/                          TrackedObjectView.ApplyData(obj, origin,
+TrackingHistoryPanel render                   trackedState) renders the SAME
+tracked_objects[] directly --                 tracked_objects[] entry (joined by
+no client-side join against                   track_id) in its in-world label --
+risk.results[], no REST                       same TTC/risk text, same track_id,
+round-trip for history                        same source
+   │                                              │
+useLiveEvents.ts buffers                      (Unity does not yet render a
+events[] deltas into the                      timeline UI for events -- the
+Event Timeline                                data is parsed and available;
+                                               display is a documented gap,
+                                               see "Known limitations" below)
+```
+
+**Why this matters**: before this, the dashboard's `TrackedObjectsTable` joined `objects[]`
+against `risk.results[]` by `track_id` *itself* (a harmless-looking client-side join, but still a
+second, independent implementation of a join the Edge already performs once), and
+`useTrackBookkeeping`/`useTrackTrajectories` reconstructed first-seen/last-seen/trajectory
+*client-side* from repeated frame observations -- both retired now that `tracked_objects[]`
+already carries the fully-joined, Edge-computed result directly. If Track 12 shows "Vehicle / TTC
+1.8s / WARNING" on the dashboard, Unity's label for the same `track_id` reads the identical
+`ttc`/`risk` field off the identical wire message -- not a coincidence of two independent
+computations agreeing, but the same computation rendered twice.
+
+**Fabricated-risk fixes, on the Unity side** (found during this pass, previously flagged but not
+yet fixed):
+- `CollisionRiskIndicator.cs`/`HUDController.cs` defaulted to `"safe"` (green) whenever no real
+  `risk` data existed yet (before the first frame, or a bridge run without the collision stage
+  wired in) -- a vehicle-body safety indicator and HUD both claiming "confirmed safe" with nothing
+  behind that claim. Both now default to `"unknown"` (a distinct gray state), matching the
+  `ClearancePanel -> "No clearance data yet"` precedent the dashboard already established.
+- `LidarCubes.cs` (legacy raw point-cloud path, no risk data on that wire at all) colored points
+  red/orange/yellow/green by distance -- a self-invented pseudo-risk scheme on a channel that
+  never carries Python's real risk assessment. Replaced with a neutral near/far shading gradient;
+  its stale `> 70f` max-range check (unrelated to this project's actual ~12m sensor) is now an
+  externalized, configurable field defaulting to the real value.
+- `RiskAudioController.cs`'s documented distance-only fallback (used only when `frame.risk` is
+  null) now reads its thresholds from `frame.config` -- the exact same
+  `collision_warning_distance_m`/`collision_critical_distance_m` Python's real engine uses --
+  instead of a second, independently-configured Inspector duplicate that could silently drift out
+  of sync with it.
+- `LidarBeep.cs` (legacy audio, pre-existing/deliberately unmodified since Phase 11) still has its
+  own disconnected thresholds -- left as-is this pass, consistent with that established
+  precedent; flagged, not fixed.
+
+**Known limitations**: Unity changes are written, not compiled/run (no Editor in this
+environment -- see docs/unity.md "Status", a pre-existing project-wide constraint). Unity parses
+`tracked_objects`/`events` and displays per-track TTC/risk in-world; it does not yet have its own
+Event Timeline UI panel (the dashboard's is the reference implementation) -- `events` is received
+and available for a future HUD addition. `sensor_status` is parsed by the dashboard but not added
+to Unity's C# types (not currently rendered anywhere in Unity) -- deliberate scope trim.
+
+## PostgreSQL as history, WebSocket as live transport
+
+**Status: implemented.** PostgreSQL (or its local SQLite fallback -- same schema, see
+`backend.db.resolve_database_url`) is this project's PERSISTENCE/HISTORY layer only. It is never
+the live transport: `/ws/live` (backed by `state.LatestState`'s in-memory ring buffer) is, and
+stays, the only path a dashboard's real-time render depends on -- no route ever blocks a live
+value on a database read.
+
+**What's persisted** (`backend/models_db.py`), each row carrying `session_id`/`source_id`/
+`timestamp`:
+
+| Table | What | Written |
+|---|---|---|
+| `sessions` | One row per ingested TCP connection | Open on connect, closed (`ended_at`/`status`) on disconnect |
+| `tracks` | One row per unique `track_id` ever seen this session | Created on `track_created`, updated in-memory every frame, flushed on `track_lost`/session close -- **never one row per frame** |
+| `collision_events` | `overall_risk` transitions (+ `collision_predicted`) | Sourced from the Edge's own `LiveState.events`, enriched from `risk.most_critical` |
+| `clearance_events` | `overall_status` transitions | Sourced from `LiveState.events`, enriched from `clearance` |
+| `ttc_events` | Per-track approaching/not-approaching transitions | Sourced from `LiveState.events`, enriched from `risk.results[]` |
+| `sensor_events` | LiDAR data-quality transitions (`Settings.sensor_quality_degraded_threshold_percent`) | Sourced from `LiveState.events` |
+
+**Not persisted**: raw `PERCEPTION_FRAME`s/point clouds (unbounded growth for no benefit -- "recent
+state" is `state.LatestState`'s bounded ring buffer); `tracking_state_changed` events (routine
+TENTATIVE->CONFIRMED graduations, not a safety-relevant moment -- still broadcast live and visible
+in `LiveState.events` on the wire, just not a separate DB row).
+
+**Events are sourced from the Edge, never re-derived** -- `ingestion.PerceptionIngestor.
+_persist_events_from_frame` reads `data["events"]` (`pipeline.LiveStateBuilder`'s own output,
+already on the wire -- see "Dashboard and Unity as pure LiveState consumers" above) and persists
+exactly what the Edge already decided, enriched with same-frame detail for the richer DB columns.
+The backend previously re-derived transitions itself from raw `data.risk`/`data.clearance`
+(`_last_risk_level`/`_last_clearance_status`); that duplicate logic is now removed.
+
+**New REST endpoints**: `GET /ttc-events`, `GET /sensor-events`, `GET /tracks-history` (mirroring
+`GET /collision-events`/`GET /clearance-events`'s own session-scoped-by-default, capped-limit
+pattern); `GET /events` now also folds in TTC/sensor transitions.
+
+## Real-time performance monitoring
+
+**Status: implemented, all figures measured from real timestamps.** `GET /debug/stream-status`
+now also reports `sensor_ingestion_latency_ms` (`last_message_at - frame.timestamp` -- sensor
+capture through the Edge's own pipeline processing to backend receipt). The dashboard's `/ws/live`
+"frame" messages now carry `broadcast_at` (stamped by `ingestion.py` at broadcast time); `useLiveSocket`
+computes `websocketLatencyMs` (`Date.now() - broadcast_at`) and `endToEndLatencyMs`
+(`Date.now() - frame.timestamp`) itself, from these two real timestamps -- never assumed,
+never a fixed/fabricated figure. Combined with the already-real `measured_scan_rate_hz`
+(`LiveState.performance_metrics`) and `duplicate_or_out_of_order_dropped` (backend-counted), the
+Live Data panel's full field list -- sensor ingestion latency, processing latency
+(`pipeline_processing_ms`), WebSocket latency, end-to-end latency, frame age, scan rate, dropped
+frames -- is entirely measured, matching this project's own "no fake 10Hz/0ms/0 dropped frames
+unless actually measured" rule.
+
 ## Repository layout
 
 The implemented layout follows `PROJECT_SPECIFICATION.md` with two justified additions inside

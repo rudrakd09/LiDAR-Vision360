@@ -12,6 +12,15 @@ Typical usage:
     with make_data_source("02_wall_in_front") as source:
         frame = source.read_scan()
 
+`SimulatorSource` is the same thing addressed via the `datasources.SensorSource` vocabulary (see
+`sensor_source.py`) -- the concrete source `scripts/sensor_source.py` builds when
+`Settings.data_source == "simulation"`:
+
+    from simulator import SimulatorSource
+
+    with SimulatorSource(scenario="02_wall_in_front") as source:
+        frame = source.read_scan()
+
 See docs/simulation.md for the full write-up.
 """
 
@@ -30,6 +39,7 @@ from .recording import (
 )
 from .scenario_schema import ScenarioSpec
 from .scenarios import get_scenario, list_scenarios, make_data_source, resolve_scenario
+from .sensor_source import SimulatorSource
 from .vehicle import VehicleConfig
 
 __all__ = [
@@ -46,6 +56,7 @@ __all__ = [
     "NoiseConfig",
     "NoiseModel",
     "SimulatedLiDARDataSource",
+    "SimulatorSource",
     "RecordedLiDARDataSource",
     "save_scan_jsonl",
     "save_scans_jsonl",

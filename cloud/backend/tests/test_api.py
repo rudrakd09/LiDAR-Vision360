@@ -4,6 +4,7 @@ during these tests) and seeds `LatestState` directly to make responses determini
 """
 
 import socket
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -74,6 +75,144 @@ class TestLatestObjectsTracks:
         assert resp.json()[0]["classification"] == "wall"
 
 
+class TestDebugEndpoints:
+    def test_live_frame_is_null_when_nothing_received(self, client):
+        resp = client.get("/debug/live-frame")
+        assert resp.status_code == 200
+        assert resp.json() is None
+
+    def test_live_frame_reflects_seeded_state(self, client):
+        state = client.app.state.latest_state
+        state.connection.state = "connected"  # debug_live_frame only reports data while actually connected
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None, "timestamp": 123.0}, frame_id=7)
+        resp = client.get("/debug/live-frame")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["objects"][0]["track_id"] == "t1"
+        assert body["timestamp"] == 123.0
+
+    def test_live_frame_is_null_while_disconnected_even_with_a_cached_frame(self, client):
+        """Regression test for a real repro: after a producer disconnects (e.g. switching
+        scenarios -- the old bridge process stopped, the new one not yet accepted),
+        `state.latest_frame` still holds the *previous* producer's last frame (by design, for
+        `GET /latest`/`/ws/live`'s own dashboard-facing contract -- see LatestState's own
+        docstring) -- but `/debug/live-frame`, read in isolation, must not hand that back as if it
+        were the current live answer. `objects: []` on that stale cached frame (as in this test)
+        is exactly the case that was previously indistinguishable from "the current scenario
+        genuinely has no objects"."""
+        state = client.app.state.latest_state
+        state.connection.state = "connected"
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None, "timestamp": 123.0, "source_id": "simulated:previous_scenario"}, frame_id=7)
+        assert client.get("/debug/live-frame").json()["objects"]  # sanity: it does report data while connected
+
+        state.connection.state = "reconnecting"  # producer dropped -- state.latest_frame is untouched (still the stale frame)
+        resp = client.get("/debug/live-frame")
+        assert resp.status_code == 200
+        assert resp.json() is None
+
+    def test_status_endpoint_still_reports_the_stale_frame_alongside_connected_false(self, client):
+        """`GET /latest` (dashboard-facing, unlike /debug/live-frame) intentionally keeps its own
+        contract unchanged -- it's paired with `connection.session_status`/client-side staleness
+        checking elsewhere, not meant to go null on every disconnect blip."""
+        state = client.app.state.latest_state
+        state.connection.state = "connected"
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None, "timestamp": 123.0}, frame_id=7)
+        state.connection.state = "reconnecting"
+        resp = client.get("/api/latest")
+        assert resp.status_code == 200
+        assert resp.json()["objects"][0]["track_id"] == "t1"  # unchanged, deliberately
+
+    def test_stream_status_before_any_frame(self, client):
+        resp = client.get("/debug/stream-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["connected"] is False
+        assert body["last_frame_id"] is None
+        assert body["frames_received"] == 0
+        assert body["frames_dropped"] == 0
+        assert body["object_count"] == 0
+        assert body["track_count"] == 0
+        assert body["risk"] is None
+        assert body["age_ms"] is None
+        # Session/sequence management fields (docs/architecture.md) -- all "not knowable yet"
+        # before any frame has ever arrived, never a fabricated placeholder.
+        assert body["session_id"] is None
+        assert body["last_sequence"] is None
+        assert body["last_timestamp"] is None
+        assert body["frame_age_ms"] is None
+        assert body["scan_rate_hz"] is None
+        assert body["measured_scan_rate_hz"] is None
+        assert body["objects"] == 0
+        assert body["tracks"] == 0
+        assert body["backend_status"] == "ok"  # this endpoint responding at all IS the real fact
+        # The fixture's real PerceptionIngestor is racing a doomed connect() against an unused
+        # port in the background (see this file's own module docstring) -- either "disconnected"
+        # or a still-in-flight "connecting" is a correct answer this early, never "connected".
+        assert body["edge_status"] in ("disconnected", "connecting")
+        assert body["websocket_status"] == "no_clients"
+        assert body["dashboard_clients_connected"] == 0
+        assert body["latency_ms"] is None
+
+    def test_stream_status_reflects_seeded_frame(self, client):
+        state = client.app.state.latest_state
+        state.connection.state = "connected"
+        state.connection.source_id = "simulated:test"  # normally set by PerceptionIngestor._handle_frame
+        state.record_frame(
+            {
+                "objects": [{"track_id": "t1", "classification": "vehicle_like"}, {"track_id": "t2", "classification": "wall"}],
+                "risk": {"overall_risk": "critical", "most_critical": None, "results": []},
+                "clearance": None, "timestamp": 555.0, "source_id": "simulated:test",
+            },
+            frame_id=42,
+        )
+        resp = client.get("/debug/stream-status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["connected"] is True
+        assert body["last_frame_id"] == 42
+        assert body["last_frame_timestamp"] == 555.0
+        assert body["frames_received"] == 1
+        assert body["source_id"] == "simulated:test"
+        assert body["risk"] == "critical"
+        assert body["object_count"] == 2
+        assert body["age_ms"] is not None and body["age_ms"] >= 0
+        # Same values, exact literal field names this task's own spec asks for.
+        assert body["last_sequence"] == 42
+        assert body["last_timestamp"] == 555.0
+        assert body["frame_age_ms"] == body["age_ms"]
+        assert body["objects"] == 2
+        assert body["tracks"] == 2
+
+    def test_stream_status_session_and_scan_rate_and_latency(self, client):
+        """Session/sequence-management fields (docs/architecture.md) once a real session with a
+        real Edge-measured scan rate and a real transmission_timestamp exist -- every value below
+        is read straight off ConnectionInfo, none fabricated."""
+        state = client.app.state.latest_state
+        state.reset_for_new_session(session_id="edge-session-123", source_id="simulated:08_approaching_obstacle")
+        state.connection.state = "connected"
+        state.connection.measured_scan_rate_hz = 9.87  # what LiveState.performance_metrics actually measured
+        state.connection.scan_rate_hz = 10.0  # SYSTEM_STATUS's own configured-target value
+        now = time.time()
+        state.connection.last_transmission_timestamp = now - 0.005  # 5ms "on the wire"
+        state.record_frame({"objects": [], "risk": None, "clearance": None, "timestamp": now}, frame_id=0)
+
+        resp = client.get("/debug/stream-status")
+        body = resp.json()
+        assert body["session_id"] == "edge-session-123"
+        assert body["source_id"] == "simulated:08_approaching_obstacle"
+        assert body["measured_scan_rate_hz"] == 9.87
+        assert body["configured_scan_rate_hz"] == 10.0
+        assert body["scan_rate_hz"] == 9.87  # prefers the real measured value over the configured one
+        assert body["backend_status"] == "ok"
+        assert body["edge_status"] == "connected"
+        assert body["latency_ms"] is not None and body["latency_ms"] >= 0
+
+    def test_api_prefixed_debug_routes_also_exist(self, client):
+        # Same double-mount convention every other route module gets (see main.py's own comment).
+        assert client.get("/api/debug/live-frame").status_code == 200
+        assert client.get("/api/debug/stream-status").status_code == 200
+
+
 class TestEventsAndSessionsEmpty:
     def test_collision_events_empty_list(self, client):
         resp = client.get("/api/collision-events")
@@ -101,3 +240,183 @@ class TestEventLimitCapping:
         settings = get_settings()
         resp = client.get(f"/api/collision-events?limit={settings.backend_event_max_limit + 1000}")
         assert resp.status_code == 200  # never errors, just silently capped server-side
+
+
+class TestEventsAreSessionScopedByDefault:
+    """Regression test for the "Event Timeline shows stale events from previous runs" bug:
+    /api/events and friends must default to the currently active session, not every event ever
+    recorded across every past ingestion connection -- a live dashboard should see the current
+    run's events, not a jumble of every previous demo run's history mixed in."""
+
+    def _seed_two_sessions(self, client):
+        from backend.models_db import CollisionEvent, SessionRecord
+
+        db = client.app.state.db
+        with db.session() as db_session:
+            db_session.add(SessionRecord(id="session-old", source_id="old_scenario", status="ended"))
+            db_session.add(SessionRecord(id="session-current", source_id="08_approaching_obstacle", status="active"))
+            db_session.add(CollisionEvent(session_id="session-old", frame_id=1, timestamp=1.0, risk_level="critical", previous_risk_level=None))
+            db_session.add(CollisionEvent(session_id="session-current", frame_id=1, timestamp=2.0, risk_level="safe", previous_risk_level=None))
+            db_session.commit()
+        client.app.state.latest_state.current_session_id = "session-current"
+
+    def test_default_query_only_returns_current_session_events(self, client):
+        self._seed_two_sessions(client)
+        resp = client.get("/api/collision-events")
+        assert resp.status_code == 200
+        events = resp.json()
+        assert len(events) == 1
+        assert events[0]["session_id"] == "session-current"
+
+    def test_session_id_all_returns_every_session(self, client):
+        self._seed_two_sessions(client)
+        resp = client.get("/api/collision-events?session_id=all")
+        assert resp.status_code == 200
+        session_ids = {e["session_id"] for e in resp.json()}
+        assert session_ids == {"session-old", "session-current"}
+
+    def test_explicit_session_id_returns_only_that_one(self, client):
+        self._seed_two_sessions(client)
+        resp = client.get("/api/collision-events?session_id=session-old")
+        assert resp.status_code == 200
+        events = resp.json()
+        assert len(events) == 1
+        assert events[0]["session_id"] == "session-old"
+
+    def test_no_active_session_means_no_filter(self, client):
+        # If nothing is currently active (e.g. the bridge was never started), showing all history
+        # is more useful than showing nothing -- there is no "current" to default to.
+        self._seed_two_sessions(client)
+        client.app.state.latest_state.current_session_id = None
+        resp = client.get("/api/collision-events")
+        assert len(resp.json()) == 2
+
+
+class TestRootAndDocs:
+    def test_root_returns_service_info_not_404(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["name"] == "LiDAR-Vision360 Backend"
+        assert "docs" in body
+        assert "endpoints" in body
+        assert "/health" in body["endpoints"]
+        assert "/api/health" in body["endpoints"]
+        assert "stream" in body
+        assert "session_status" in body["stream"]
+
+    def test_docs_available(self, client):
+        resp = client.get("/docs")
+        assert resp.status_code == 200
+
+    def test_openapi_schema_available(self, client):
+        resp = client.get("/openapi.json")
+        assert resp.status_code == 200
+
+
+class TestBarePathAliases:
+    """Every route must work identically at its bare path and its original /api/* path -- 'add
+    compatible routes rather than breaking existing clients'."""
+
+    def test_health_matches_at_both_paths(self, client):
+        bare, prefixed = client.get("/health"), client.get("/api/health")
+        assert bare.status_code == prefixed.status_code == 200
+        assert bare.json()["status"] == prefixed.json()["status"] == "ok"  # uptime_s itself may differ by a few ms between the two calls
+
+    def test_status_identical_at_both_paths(self, client):
+        assert client.get("/status").json()["state"] == client.get("/api/status").json()["state"]
+
+    def test_objects_identical_at_both_paths(self, client):
+        state = client.app.state.latest_state
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None}, frame_id=1)
+        assert client.get("/objects").json() == client.get("/api/objects").json()
+
+    def test_metrics_available_at_both_paths(self, client):
+        assert client.get("/metrics").status_code == client.get("/api/metrics").status_code == 200
+
+
+class TestTrackDetailAndHistory:
+    def test_unknown_track_returns_404(self, client):
+        resp = client.get("/api/tracks/never-seen")
+        assert resp.status_code == 404
+
+    def test_known_track_returns_summary(self, client):
+        state = client.app.state.latest_state
+        state.record_frame({"objects": [{"track_id": "t7", "classification": "vehicle_like", "centroid": {"x": 1.0, "y": 2.0}, "distance": 3.0}], "risk": None, "clearance": None}, frame_id=1)
+        resp = client.get("/api/tracks/t7")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["track_id"] == "t7"
+        assert body["frames_tracked"] == 1
+        assert body["current"]["classification"] == "vehicle_like"
+
+    def test_tracking_history_requires_track_id_param(self, client):
+        resp = client.get("/api/tracking-history")
+        assert resp.status_code == 422  # required query param missing
+
+    def test_tracking_history_unknown_track_returns_404(self, client):
+        resp = client.get("/api/tracking-history?track_id=never-seen")
+        assert resp.status_code == 404
+
+    def test_tracking_history_returns_points_for_known_track(self, client):
+        state = client.app.state.latest_state
+        for i in range(3):
+            state.record_frame({"objects": [{"track_id": "t7", "classification": "vehicle_like", "centroid": {"x": float(i), "y": 0.0}, "distance": 1.0}], "risk": None, "clearance": None}, frame_id=i)
+        resp = client.get("/api/tracking-history?track_id=t7")
+        assert resp.status_code == 200
+        points = resp.json()
+        assert len(points) == 3
+        assert [p["x"] for p in points] == [0.0, 1.0, 2.0]
+
+    def test_tracking_history_respects_limit(self, client):
+        state = client.app.state.latest_state
+        for i in range(5):
+            state.record_frame({"objects": [{"track_id": "t7", "classification": "vehicle_like", "centroid": {"x": float(i), "y": 0.0}, "distance": 1.0}], "risk": None, "clearance": None}, frame_id=i)
+        resp = client.get("/api/tracking-history?track_id=t7&limit=2")
+        assert len(resp.json()) == 2
+
+
+class TestSessionDetail:
+    def test_unknown_session_returns_404(self, client):
+        resp = client.get("/api/sessions/never-existed")
+        assert resp.status_code == 404
+
+    def test_known_session_returns_detail(self, client):
+        from backend.models_db import SessionRecord
+
+        db = client.app.state.db
+        with db.session() as db_session:
+            db_session.add(SessionRecord(id="s1", source_id="08_approaching_obstacle", status="ended", frame_count=42))
+            db_session.commit()
+        resp = client.get("/api/sessions/s1")
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "s1"
+        assert resp.json()["frame_count"] == 42
+
+    def test_active_session_detail_reflects_live_frame_count(self, client):
+        from backend.models_db import SessionRecord
+
+        db = client.app.state.db
+        with db.session() as db_session:
+            db_session.add(SessionRecord(id="s2", source_id="08_approaching_obstacle", status="active", frame_count=0))
+            db_session.commit()
+        state = client.app.state.latest_state
+        state.current_session_id = "s2"
+        for i in range(3):
+            state.record_frame({"objects": [], "risk": None, "clearance": None}, frame_id=i)
+        resp = client.get("/api/sessions/s2")
+        assert resp.json()["frame_count"] == 3  # patched from live state, not the stale DB 0
+
+
+class TestMetrics:
+    def test_metrics_returns_real_counters(self, client):
+        state = client.app.state.latest_state
+        state.record_frame({"objects": [{"track_id": "t1", "classification": "wall"}], "risk": None, "clearance": None}, frame_id=1)
+        resp = client.get("/api/metrics")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["frames_received"] == 1
+        assert body["active_tracks"] == 1
+        assert body["ring_buffer_used"] == 1
+        assert "session_status" in body
+        assert "uptime_s" in body

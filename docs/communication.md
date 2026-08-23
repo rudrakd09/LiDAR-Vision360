@@ -87,7 +87,9 @@ this field's contents come from):
       "direction": 182.5,                             // null under the same condition
       "predicted_position": {"x": 6.0, "y": 0.1},      // null under the same condition
       "tracking_state": "confirmed", "movement_state": "moving",
-      "track_age": 12, "track_hits": 12, "track_misses": 0
+      "track_age": 12, "track_hits": 12, "track_misses": 0,
+      "point_count": 18, "aspect_ratio": 2.3           // real geometric features (DetectedObject.point_count /
+                                                          // shape_features.aspect_ratio), null if not populated
     }
   ],
 

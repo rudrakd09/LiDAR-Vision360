@@ -319,3 +319,40 @@ class TestStartStopIdempotency:
     def test_stop_before_start_is_safe(self):
         server = PerceptionStreamServer(settings=_settings())
         server.stop()  # must not raise
+
+
+class TestPortExclusivity:
+    """Regression test for the "dashboard silently stuck talking to a stale bridge process"
+    bug: a second, genuinely-separate `PerceptionStreamServer` instance (standing in for a second
+    `serve_unity_bridge.py` process someone forgot to stop) must fail loudly on the same port a
+    first one is still actively listening on, not silently coexist -- see `streaming.server.
+    _bind_exclusive`'s own docstring for why plain `SO_REUSEADDR` didn't provide this on Windows.
+    """
+
+    def test_second_instance_on_same_port_raises(self):
+        settings = _settings()
+        first = PerceptionStreamServer(settings=settings)
+        first.start()
+        try:
+            second = PerceptionStreamServer(settings=settings)  # same json port as `first`
+            with pytest.raises(OSError):
+                second.start()
+            assert not second.is_running
+        finally:
+            first.stop()
+
+    def test_port_is_free_again_after_stop(self):
+        """Not just "raises when taken" -- confirms `stop()` actually releases the port so a
+        legitimate next run (the whole point of the demo workflow: stop scenario A, start
+        scenario B) isn't itself blocked by this same exclusivity."""
+        settings = _settings()
+        first = PerceptionStreamServer(settings=settings)
+        first.start()
+        first.stop()
+
+        second = PerceptionStreamServer(settings=settings)
+        second.start()  # must not raise -- the port was genuinely released
+        try:
+            assert second.is_running
+        finally:
+            second.stop()

@@ -11,6 +11,26 @@ socket/file I/O here -- that lives in `scripts/serve_unity_bridge.py`, which alr
 both `simulator` and `perception`, matching every earlier phase's own script/library boundary.
 """
 
-from .unity_protocol import build_clearance_payload, build_config_payload, build_frame_message, pack_occupancy_grid
+from .unity_protocol import (
+    build_clearance_payload,
+    build_config_payload,
+    build_events_payload,
+    build_frame_message,
+    build_performance_payload,
+    build_sensor_status_payload,
+    build_tracked_object_payload,
+    build_tracked_objects_payload,
+    pack_occupancy_grid,
+)
 
-__all__ = ["build_frame_message", "pack_occupancy_grid", "build_config_payload", "build_clearance_payload"]
+__all__ = [
+    "build_frame_message",
+    "pack_occupancy_grid",
+    "build_config_payload",
+    "build_clearance_payload",
+    "build_sensor_status_payload",
+    "build_performance_payload",
+    "build_tracked_object_payload",
+    "build_tracked_objects_payload",
+    "build_events_payload",
+]

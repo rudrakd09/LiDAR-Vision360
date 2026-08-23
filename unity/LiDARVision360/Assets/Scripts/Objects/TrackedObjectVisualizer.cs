@@ -32,12 +32,38 @@ public class TrackedObjectVisualizer : MonoBehaviour
 
     void OnEnable()
     {
-        if (client != null) client.OnPerceptionFrameReceived += HandleFrame;
+        if (client != null)
+        {
+            client.OnPerceptionFrameReceived += HandleFrame;
+            client.OnSessionChanged += HandleSessionChanged;
+        }
     }
 
     void OnDisable()
     {
-        if (client != null) client.OnPerceptionFrameReceived -= HandleFrame;
+        if (client != null)
+        {
+            client.OnPerceptionFrameReceived -= HandleFrame;
+            client.OnSessionChanged -= HandleSessionChanged;
+        }
+    }
+
+    /// <summary>A new scenario/hardware session started (see
+    /// <see cref="PerceptionTCPClient.OnSessionChanged"/>, docs/architecture.md "Session and
+    /// sequence management") -- every view from the PREVIOUS session must be destroyed
+    /// immediately, not left to age out via <see cref="removeAfterSeconds"/>: the previous
+    /// session's track_ids have nothing to do with the new session's (a fresh `ObjectTracker`
+    /// numbers from "track-1" again), so a reused id would otherwise silently reapply a stale
+    /// view's old classification/position for up to `removeAfterSeconds` before this new session's
+    /// own first real update for that id arrives.</summary>
+    void HandleSessionChanged(string newSessionId)
+    {
+        foreach (var view in _views.Values)
+        {
+            if (view != null) Destroy(view.gameObject);
+        }
+        _views.Clear();
+        _lastSeenTime.Clear();
     }
 
     void HandleFrame(PerceptionFrameData frame)
@@ -47,6 +73,18 @@ public class TrackedObjectVisualizer : MonoBehaviour
         float now = Time.time;
         var seenThisFrame = new HashSet<string>();
 
+        // Joined by track_id -- the SAME identity `frame.objects` and `frame.trackedObjects` both
+        // already share for the exact same object (see docs/architecture.md "Dashboard and Unity
+        // as pure LiveState consumers"). `null` for an older payload that predates
+        // `tracked_objects` -- TrackedObjectView.ApplyData already degrades gracefully for that.
+        Dictionary<string, TrackedObjectData> trackedByTrackId = null;
+        if (frame.trackedObjects != null)
+        {
+            trackedByTrackId = new Dictionary<string, TrackedObjectData>(frame.trackedObjects.Count);
+            foreach (var t in frame.trackedObjects)
+                if (!string.IsNullOrEmpty(t.trackId)) trackedByTrackId[t.trackId] = t;
+        }
+
         foreach (var obj in frame.objects)
         {
             if (string.IsNullOrEmpty(obj.trackId)) continue; // defensive -- never index by a missing ID (see docs/unity.md "Data validation")
@@ -55,7 +93,9 @@ public class TrackedObjectVisualizer : MonoBehaviour
 
             TrackedObjectView view = GetOrCreateView(obj.trackId, obj.classification);
             if (view == null) continue; // e.g. trackedObjectViewPrefab not assigned yet -- already logged, never crash
-            view.ApplyData(obj, origin);
+            TrackedObjectData trackedState = null;
+            trackedByTrackId?.TryGetValue(obj.trackId, out trackedState);
+            view.ApplyData(obj, origin, trackedState);
             view.gameObject.SetActive(true);
         }
 

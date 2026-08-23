@@ -28,6 +28,7 @@ public class RiskAudioController : MonoBehaviour
     public float warningBeepInterval = 0.5f;
 
     [Header("Distance-only fallback (used only if frame.risk is null)")]
+    [Tooltip("Used ONLY if frame.config is also unavailable (frame itself null) -- whenever a real frame exists, its own frame.config.collisionWarningDistanceM/collisionCriticalDistanceM are used instead (see ResolveRisk), never this Inspector-configured duplicate. Kept only as the last-resort default before any frame has ever arrived.")]
     public float fallbackWarningDistanceM = 5f;
     public float fallbackCriticalDistanceM = 2f;
 
@@ -69,8 +70,17 @@ public class RiskAudioController : MonoBehaviour
             if (obj.distance < minDistance) minDistance = obj.distance;
         }
 
-        if (minDistance <= fallbackCriticalDistanceM) return "critical";
-        if (minDistance <= fallbackWarningDistanceM) return "warning";
+        // Thresholds come from THIS frame's own config -- the exact same Settings.
+        // collision_warning_distance_m/collision_critical_distance_m Python's real collision
+        // engine uses -- not a second, independently-configured Inspector copy that could drift
+        // out of sync with it. The Inspector fields above are only the last-resort default for
+        // the (practically unreachable, given the `frame == null` check above) case where a real
+        // frame exists but somehow carries no config.
+        float warningDistanceM = frame.config != null ? frame.config.collisionWarningDistanceM : fallbackWarningDistanceM;
+        float criticalDistanceM = frame.config != null ? frame.config.collisionCriticalDistanceM : fallbackCriticalDistanceM;
+
+        if (minDistance <= criticalDistanceM) return "critical";
+        if (minDistance <= warningDistanceM) return "warning";
         return "safe";
     }
 

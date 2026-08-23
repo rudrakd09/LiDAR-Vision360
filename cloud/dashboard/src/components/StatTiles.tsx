@@ -1,29 +1,21 @@
-import type { ConnectionStatus, PerceptionFrameData } from "../types";
-import { useMeasuredScanRate } from "../hooks/useMeasuredScanRate";
+import type { PerceptionFrameData } from "../types";
 
-export function StatTiles({ frame, connection }: { frame: PerceptionFrameData | null; connection: ConnectionStatus | null }) {
-  const risk = frame?.risk?.overall_risk ?? null;
-  const mostCritical = frame?.risk?.most_critical ?? null;
+/** OBJECTS section: Object count, Track count -- both read directly off the wire (`objects[]`
+ * this scan, `tracked_objects[]` the Edge's joined per-track view), never computed here. See
+ * docs/architecture.md "Dashboard and Unity as pure LiveState consumers". */
+export function StatTiles({ frame }: { frame: PerceptionFrameData | null }) {
   const objectCount = frame?.objects.length ?? 0;
-  const measuredHz = useMeasuredScanRate(frame?.sequence_number ?? null);
+  const trackCount = frame?.tracked_objects?.length ?? objectCount; // falls back to objects.length only for a payload that predates tracked_objects
 
   return (
-    <section className="stat-tiles">
+    <section className="stat-tiles" data-testid="objects-panel">
       <div className="stat-tile">
-        <div className="stat-label">Risk</div>
-        <div className={`stat-value ${risk ? `risk-${risk}` : ""}`}>{risk ? risk.toUpperCase() : "—"}</div>
-      </div>
-      <div className="stat-tile">
-        <div className="stat-label">TTC</div>
-        <div className="stat-value">{mostCritical?.ttc != null ? `${mostCritical.ttc.toFixed(1)} s` : "N/A"}</div>
-      </div>
-      <div className="stat-tile">
-        <div className="stat-label">Objects</div>
+        <div className="stat-label">Object Count</div>
         <div className="stat-value">{objectCount}</div>
       </div>
       <div className="stat-tile">
-        <div className="stat-label">Scan Rate</div>
-        <div className="stat-value">{measuredHz != null ? `${measuredHz.toFixed(1)} Hz` : connection?.scan_rate_hz ? `${connection.scan_rate_hz.toFixed(1)} Hz` : "—"}</div>
+        <div className="stat-label">Track Count</div>
+        <div className="stat-value">{trackCount}</div>
       </div>
     </section>
   );

@@ -373,6 +373,19 @@ class Settings(BaseSettings):
     # given at all.
     collision_default_vehicle_speed_mps: float = 0.0
 
+    # Hysteresis: how far beyond the plain thresholds above real distance/TTC must recover before
+    # a risk level is allowed to DE-escalate (CRITICAL->WARNING->SAFE). Escalating (getting worse)
+    # is always immediate/unfiltered -- only recovery is delayed, so genuine danger is never
+    # masked; see collision.hysteresis for the mechanism (a small per-track_id "last accepted
+    # level" memory in CollisionRiskEngine -- assess_risk's own threshold rules are unchanged).
+    # Defaults (0.5m / 0.5s) comfortably absorb the residual sensor/preprocessing noise already
+    # documented above (lidar_distance_noise_std_m default 0.02m) -- found via a real repro: a
+    # wall placed exactly at collision_warning_distance_m (5.0m) flip-flopped SAFE<->WARNING on
+    # nearly every single scan from sub-millimeter jitter, with no code bug anywhere in the
+    # bridge/backend/dashboard pipeline -- the risk engine itself had no deadband at its boundary.
+    collision_risk_hysteresis_distance_margin_m: float = 0.5
+    collision_risk_hysteresis_ttc_margin_s: float = 0.5
+
     # --- Clearance Engine (Phase 10, perception/src/clearance/) ---
     # Directional (front/rear/left/right) clearance thresholds, meters -- from the vehicle's
     # safety-margin envelope edge (collision.geometry.vehicle_footprint, the same envelope Phase 9
@@ -476,6 +489,21 @@ class Settings(BaseSettings):
     # applied here to the same underlying question ("is this track still relevant right now").
     backend_track_grace_period_s: float = 2.0
 
+    # How many of the most recent per-scan position/velocity samples GET /api/tracking-history
+    # keeps for each track_id -- bounded like every other in-memory collection here (see
+    # backend_ring_buffer_size's own comment), so a long-lived track cannot grow this without
+    # bound either. Cleared (along with the rest of that track_id's bookkeeping) once the track
+    # itself is pruned from the roster (backend_track_grace_period_s elapsed with no sighting).
+    backend_track_history_length: int = 50
+
+    # A session is reported "active" only while a message (frame or heartbeat) has arrived within
+    # this many seconds -- distinct from the raw TCP `connection.state` (which stays "connected"
+    # even if the bridge process has stalled without actually dropping the socket). See
+    # docs/cloud.md "Session lifecycle". Kept as its own setting rather than reusing
+    # `streaming_connection_timeout_s` (Unity's own staleness threshold) since the backend and
+    # Unity are independent consumers that may reasonably tune this separately.
+    backend_session_stale_threshold_s: float = 3.0
+
     # --- Database (local-only; see the cloud-backend note above -- phase numbers below this point
     # in PROJECT_SPECIFICATION.md's original plan no longer match as-built history). Tried first;
     # if unreachable (no local Postgres, wrong credentials, driver missing), the backend falls back
@@ -483,6 +511,137 @@ class Settings(BaseSettings):
     # failing to start -- see docs/cloud.md "Database". ---
     database_url: str = "postgresql://lidar:lidar@localhost:5432/lidar_vision360"
     backend_sqlite_fallback_path: str = str(_REPO_ROOT / "cloud" / "backend" / "data" / "lidar_vision360.db")
+
+    # --- Sensor source selection (sensor input abstraction -- see datasources/, docs/architecture.md
+    # "Sensor source abstraction"). "simulation" (default) -> scripts/sensor_source.py builds a
+    # `simulator.SimulatorSource` for the requested scenario; "hardware" -> `datasources.
+    # STM32Source`, still a placeholder (see that class's own docstring -- the STM32 UART protocol
+    # is not yet defined, per PROJECT_SPECIFICATION.md). Any other value is rejected loudly by
+    # `get_sensor_source()` rather than silently falling back to one or the other. ---
+    data_source: str = "simulation"  # "simulation" | "hardware"
+
+    # STM32 UART hardware adapter config (Phase 8 architecture scaffolding; real values are Phase
+    # 16, once hardware/firmware requirements are known) -- externalized per this project's own
+    # "do not hard-code... network addresses" rule (PROJECT_SPECIFICATION.md, Quality
+    # Requirements). Placeholder defaults only; the real port/baud rate depend on the actual
+    # hardware setup and belong in `.env`, never in code.
+    stm32_uart_port: str = "COM3"
+    stm32_uart_baudrate: int = 115200
+    # `SensorFrame.source_id` / `LiveState.source_id` for a hardware run -- externalized rather
+    # than hard-coded in datasources/stm32_source.py, same reasoning as every other value on this
+    # class. Analogous to a simulation run's own `f"simulated:{scenario_id}"` (built from the
+    # scenario, not configurable -- there's nothing to configure there); a single real hardware
+    # rig has no per-run variant to encode, so one fixed, externalized label is enough.
+    hardware_source_id: str = "stm32_hardware"
+
+    # --- STM32 wire-protocol configuration (Phase 8 architecture scaffolding for
+    # datasources.stm32) -- every field below is `None` (an explicit "unset") until the hardware
+    # team's real specification is known; `STM32Source.connect()` validates all of them and raises
+    # `STM32ConfigurationError` (never a silent fallback to simulated/fabricated data) if any
+    # required one is still unset. See docs/hardware-integration.md "Hardware integration
+    # checklist" for exactly which of these the hardware team must supply, and why each one is
+    # deliberately NOT guessed here. `stm32_uart_port`/`stm32_uart_baudrate` above are reused
+    # unchanged (already established placeholders); everything below is new.
+
+    # Connection lifecycle -- timeouts/backoff are ordinary operational parameters (not protocol
+    # facts), so these DO get real, sensible defaults rather than `None`; still fully overridable.
+    stm32_connect_timeout_s: float = 5.0
+    stm32_read_timeout_s: float = 2.0
+    stm32_reconnect_initial_backoff_s: float = 1.0
+    stm32_reconnect_max_backoff_s: float = 10.0
+    stm32_max_reconnect_attempts: int | None = None  # None = retry indefinitely
+
+    # Frame boundaries -- EITHER delimited framing (start/end marker, hex string e.g. "AA55") OR
+    # fixed-length framing (stm32_frame_length_bytes). Both unset = not configured.
+    stm32_frame_start_marker: str | None = None
+    stm32_frame_end_marker: str | None = None
+    stm32_frame_length_bytes: int | None = None
+
+    stm32_byte_order: str | None = None  # "little" | "big" -- required, no default (see checklist)
+
+    # Header fields within a frame: (offset in bytes from frame start, width in bytes) for the
+    # message-type discriminator and the sequence number -- the common
+    # marker+type+sequence+payload+crc framing convention used by most simple embedded serial
+    # protocols. The *convention* (that these two fields exist, each at a fixed offset/width) is
+    # assumed as reusable scaffolding; the actual offsets/widths are placeholders (`None`/default
+    # widths only) until the real spec fixes them.
+    stm32_message_type_offset: int | None = None
+    stm32_message_type_width: int = 1
+    stm32_sequence_number_offset: int | None = None
+    stm32_sequence_number_width: int = 2
+    stm32_sequence_modulus: int | None = None  # e.g. 65536 for a wrapping uint16 counter; None = no wraparound
+
+    # Message-type discriminator values distinguishing a LiDAR payload from a radar payload on
+    # the same wire.
+    stm32_lidar_message_type: int | None = None
+    stm32_radar_message_type: int | None = None
+
+    # CRC/checksum algorithm protecting each frame -- one of the standard, well-defined algorithms
+    # `datasources.stm32.crc` implements ("none" | "xor8" | "sum8" | "crc8" | "crc16_ccitt"); which
+    # one the real firmware actually uses is what's unknown, not the algorithms themselves.
+    stm32_crc_algorithm: str | None = None
+
+    # Scaling: raw on-wire integer -> physical unit (e.g. "distance is uint16 millimeters" ->
+    # scale 0.001 for meters). Applied by the LiDAR/radar message parsers, never guessed here.
+    stm32_lidar_distance_scale: float | None = None
+    stm32_lidar_angle_scale: float | None = None
+    stm32_radar_range_scale: float | None = None
+    stm32_radar_velocity_scale: float | None = None
+
+    # How to interpret the timestamp field the STM32 sends (if any): "unix_epoch_ms" |
+    # "unix_epoch_s" | "device_uptime_ms" (needs an Edge-side epoch alignment step, not yet
+    # defined) | "none" (no on-wire timestamp -- the Edge stamps its own receive time instead).
+    stm32_timestamp_format: str | None = None
+
+    # --- Sensor fusion (Phase 9, fusion.FusionEngine) -- LiDAR+radar association/gating
+    # parameters. Unlike the stm32_* protocol fields above, these are NOT protocol facts (nothing
+    # here depends on the real R121 wire format) -- they are Edge-side tuning knobs for the
+    # fusion algorithm itself (how close in space/time/plausibility a radar target must be to a
+    # LiDAR object to be considered "the same thing"), so they get real, documented defaults
+    # rather than `None`. See docs/fusion.md.
+
+    # Master switch: `False` forces LiDAR-only behavior even if a (valid, fresh) RadarReading is
+    # available -- an explicit rollback/debugging knob on top of FusionEngine's own automatic
+    # per-scan fallback to LiDAR-only whenever radar data is missing/stale/invalid.
+    fusion_enabled: bool = True
+
+    # Spatial gating: a radar target and a LiDAR object are considered candidates for the same
+    # physical object only if their derived Cartesian positions are within this distance.
+    fusion_association_max_distance_m: float = 1.5
+    # Range gating: additionally, their range-from-vehicle must agree within this much (a coarser,
+    # independent check alongside the Cartesian-distance one above -- catches cases where angular
+    # uncertainty alone would otherwise let a spatially-close-looking match through).
+    fusion_association_max_range_diff_m: float = 2.0
+    # Timestamp-based association: a RadarReading older (or newer) than this relative to the
+    # LiDAR scan it would be fused with is treated as stale/not-yet-available -- FusionEngine
+    # falls back to LiDAR-only for that scan rather than fusing against stale radar data.
+    fusion_max_timestamp_diff_s: float = 0.5
+
+    # Plausibility bounds -- NOT real R121 specifications, just Edge-side sanity limits so a
+    # garbled/noisy radar reading (e.g. a corrupted CAN frame that happens to still parse) cannot
+    # silently inject an absurd value into the fused result. A target outside these is dropped,
+    # never fused, never corrupts the LiDAR-derived object it might otherwise have matched.
+    fusion_max_valid_range_m: float = 200.0
+    fusion_max_valid_velocity_mps: float = 60.0
+
+    # --- LiveState (Edge single-source-of-truth aggregate -- see models/live_state.py,
+    # pipeline/live_state.py, docs/architecture.md "LiveState") ---
+    # Bounded per-track trajectory length -- same "bounded, drop-oldest" principle as
+    # backend_track_history_length (cloud/backend), applied at the Edge instead so the trajectory
+    # is already bounded at the source, not just when it later crosses the wire.
+    live_state_trajectory_length: int = 50
+    # Below this real, measured `valid_percentage` (PreprocessedScan.quality_statistics --
+    # preprocessing.Preprocessor's own actual validation/outlier counts, never fabricated), a
+    # "sensor" LiveStateEvent/SensorEvent fires -- see pipeline/live_state.py's own
+    # `_record_sensor_events`, backend/models_db.py::SensorEvent. 99.0 means "more than 1% of this
+    # scan's measurements were invalid or outlier-flagged" -- verified against scenario
+    # 10_missing_outliers (real valid_percentage ~92.8%, crosses it) vs. a clean scenario's real
+    # 100.0% (never crosses it); 09_noisy_lidar adds distance noise without necessarily failing
+    # validation, so it may or may not cross this depending on the scan -- not assumed either way.
+    sensor_quality_degraded_threshold_percent: float = 99.0
+    # Bounded most-recent-first collision/clearance transition log kept on LiveState.events --
+    # mirrors backend_event_max_limit's "do not expose unlimited historical records" rule.
+    live_state_event_max_count: int = 100
 
 
 @lru_cache

@@ -47,6 +47,30 @@ from .protocol import MessageType, build_heartbeat_message
 logger = get_logger(__name__)
 
 
+def _bind_exclusive(sock: socket.socket, host: str, port: int) -> None:
+    """Bind `sock` to `(host, port)` such that a second, still-running instance of this same
+    server (a stray/forgotten previous `scripts/serve_unity_bridge.py` run, most concretely --
+    see docs/cloud.md "Known limitations") gets a loud, immediate `OSError: address already in
+    use` on its own `bind()` call, rather than silently succeeding alongside the first.
+
+    Plain `SO_REUSEADDR` (this project's behavior before this fix) does NOT provide that on
+    Windows: unlike POSIX, where it only eases rebinding a very-recently-closed socket still in
+    TIME_WAIT, Windows' `SO_REUSEADDR` permits a *second, concurrently-running* process to
+    bind+listen on a port someone else is already listening on -- new connections then land on
+    whichever of the two listeners the OS happens to route them to, not necessarily the one just
+    started. That is exactly how a demo session ended up silently talking to a stale bridge
+    process from an earlier scenario run instead of the one just started. `SO_EXCLUSIVEADDRUSE`
+    is the Windows-documented fix for precisely this (mutually exclusive with `SO_REUSEADDR` --
+    do not set both). POSIX has no such footgun to begin with, so `SO_REUSEADDR` there keeps its
+    original, harmless meaning.
+    """
+    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+
+
 class PerceptionStreamServer:
     """Serves the structured, versioned JSON protocol (`Settings.streaming_json_port`)."""
 
@@ -62,6 +86,24 @@ class PerceptionStreamServer:
         self._clients: dict[socket.socket, dict] = {}
 
         self._frames_sent = 0
+
+        # Current run's identity, for HEARTBEAT messages this server builds and sends on its own
+        # timer (see _heartbeat_loop) -- PERCEPTION_FRAME/SYSTEM_STATUS/ERROR messages carry their
+        # own session_id/source_id because their caller (scripts/serve_unity_bridge.py) builds
+        # them directly; a HEARTBEAT is the one message type this class assembles internally, so
+        # it needs its own copy to stay consistent (see docs/architecture.md "Session and sequence
+        # management" -- every message a run sends carries the same session_id/source_id).
+        # `None` until the caller sets them (see set_session), which preserves this class's own
+        # "not tightly coupled to any one perception module" design -- it has no opinion on what a
+        # session_id *is*, only that it should echo whatever it was told.
+        self.session_id: str | None = None
+        self.source_id: str | None = None
+
+    def set_session(self, session_id: str | None, source_id: str | None) -> None:
+        """Called once by the composition root (`scripts/serve_unity_bridge.py`) right after a
+        `SensorSource` is connected -- see module-level callers for the exact sequencing."""
+        self.session_id = session_id
+        self.source_id = source_id
 
     @property
     def client_count(self) -> int:
@@ -80,8 +122,7 @@ class PerceptionStreamServer:
         if self._running:
             return
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_socket.bind((self.settings.streaming_host, self.settings.streaming_json_port))
+        _bind_exclusive(self._server_socket, self.settings.streaming_host, self.settings.streaming_json_port)
         self._server_socket.listen(8)
         self._running = True
         self._start_time = time.time()
@@ -182,7 +223,10 @@ class PerceptionStreamServer:
             if not self._running:
                 return
             uptime = (time.time() - self._start_time) if self._start_time else 0.0
-            self.publish(build_heartbeat_message(uptime, self._frames_sent, self.client_count))
+            self.publish(build_heartbeat_message(
+                uptime, self._frames_sent, self.client_count,
+                session_id=self.session_id, source_id=self.source_id,
+            ))
 
 
 class RawLidarStreamServer:
@@ -210,8 +254,7 @@ class RawLidarStreamServer:
         if self._running:
             return
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_socket.bind((self.settings.streaming_host, self.settings.streaming_raw_port))
+        _bind_exclusive(self._server_socket, self.settings.streaming_host, self.settings.streaming_raw_port)
         self._server_socket.listen(8)
         self._running = True
 

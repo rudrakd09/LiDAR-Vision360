@@ -157,4 +157,15 @@ class DetectedObject(BaseModel):
     track_hits: int | None = Field(default=None, ge=0, description="Number of scans in which this track was successfully associated with a detection (including this one, if matched), populated by tracking (Phase 7).")
     track_misses: int | None = Field(default=None, ge=0, description="Current consecutive-miss streak; 0 while actively detected, populated by tracking (Phase 7).")
 
+    # Added in Phase 9 (sensor fusion, fusion.FusionEngine) -- additive, same "populate a few new
+    # Optional fields on the one existing DetectedObject, no parallel model" pattern as Phase 6/7's
+    # additions above. `sensor_sources` defaults to `["lidar"]` (not `[]`) since every object that
+    # existed before Phase 9 -- and every one FusionEngine passes through untouched in LiDAR-only
+    # mode -- came from LiDAR alone; this default keeps that true without every caller needing to
+    # set it explicitly. See docs/fusion.md.
+    sensor_sources: list[str] = Field(default_factory=lambda: ["lidar"], description='Which sensor(s) contributed to this object -- "lidar", "radar", or both, populated by fusion.FusionEngine.')
+    radar_target_id: str | None = Field(default=None, description="The radar's own target/track identifier matched to this object, if fusion.FusionEngine matched one (see RadarTarget.target_id).")
+    radar_confidence: float | None = Field(default=None, ge=0.0, le=1.0, description="Radar-reported detection confidence for the matched/contributing radar target, if it reported one.")
+    radar_range_m: float | None = Field(default=None, ge=0.0, description="Radar-reported range to the matched target, meters, if fusion contributed one -- kept alongside `distance` (LiDAR-derived) rather than overwriting it, so both sources stay individually inspectable.")
+
     timestamp: float = Field(..., description="Unix epoch timestamp (seconds, float) this observation refers to.")

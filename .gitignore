@@ -70,6 +70,10 @@ embedded/stm32/**/Release/
 pgdata/
 docker/pgdata/
 
+# cloud/backend's local SQLite fallback (backend.db.resolve_database_url) -- runtime state
+# rewritten on every backend run, not source; see docs/cloud.md "Database".
+cloud/backend/data/
+
 ### Docker ###
 docker/**/*.env
 

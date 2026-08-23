@@ -27,6 +27,8 @@ public class HUDController : MonoBehaviour
     public Text ttcText;
     public Text mostCriticalText;
     public Text clearanceText;
+    [Tooltip("Optional -- shows client.CurrentSessionId / the current frame's own source_id. See docs/architecture.md \"Session and sequence management\".")]
+    public Text sessionText;
 
     [Header("Colors")]
     public Color safeColor = Color.green;
@@ -37,6 +39,12 @@ public class HUDController : MonoBehaviour
     float _lastFrameTime = -1f;
     float _measuredScanIntervalSeconds;
     int _lastObjectCount;
+    /// <summary>Real, Edge-measured rate from `frame.performanceMetrics.measuredScanRateHz`
+    /// (`pipeline.LiveStateBuilder`) -- preferred over `_measuredScanIntervalSeconds` below
+    /// (this script's own client-side arrival-timing estimate) wherever available. `null` for an
+    /// older payload that predates this field, in which case the client-side estimate is still
+    /// used as a fallback -- see UpdateLidarInfo.</summary>
+    float? _lastMeasuredScanRateHz;
 
     string _lastErrorMessage;
     float _lastErrorAt = -1f;
@@ -75,11 +83,24 @@ public class HUDController : MonoBehaviour
         }
         _lastFrameTime = now;
         _lastObjectCount = frame != null && frame.objects != null ? frame.objects.Count : 0;
+        _lastMeasuredScanRateHz = frame != null && frame.performanceMetrics != null ? frame.performanceMetrics.measuredScanRateHz : null;
 
         UpdateLidarInfo();
         UpdateObjects();
         UpdateRisk(frame);
         UpdateClearance(frame);
+        UpdateSession(frame);
+    }
+
+    /// <summary>Session/source identity (see docs/architecture.md "Session and sequence
+    /// management") -- purely diagnostic, same "just show what Python already decided" rule every
+    /// other HUD field here follows.</summary>
+    void UpdateSession(PerceptionFrameData frame)
+    {
+        if (sessionText == null) return;
+        string sessionId = frame != null ? frame.sessionId : null;
+        string sourceId = frame != null ? frame.sourceId : null;
+        sessionText.text = string.Format("SESSION:\n{0}\nSOURCE: {1}", string.IsNullOrEmpty(sessionId) ? "—" : sessionId, string.IsNullOrEmpty(sourceId) ? "—" : sourceId);
     }
 
     void Update()
@@ -126,8 +147,19 @@ public class HUDController : MonoBehaviour
     void UpdateLidarInfo()
     {
         if (lidarInfoText == null) return;
-        float hz = _measuredScanIntervalSeconds > 0f ? 1f / _measuredScanIntervalSeconds : 0f;
-        lidarInfoText.text = string.Format("LiDAR:\n{0:F1} Hz", hz);
+        // Prefer the Edge's own real, per-scan measurement over this script's client-side
+        // arrival-timing estimate -- see _lastMeasuredScanRateHz's own docstring.
+        if (_lastMeasuredScanRateHz.HasValue)
+        {
+            lidarInfoText.text = string.Format("LiDAR:\n{0:F1} Hz", _lastMeasuredScanRateHz.Value);
+            return;
+        }
+        if (_measuredScanIntervalSeconds > 0f)
+        {
+            lidarInfoText.text = string.Format("LiDAR:\n{0:F1} Hz", 1f / _measuredScanIntervalSeconds);
+            return;
+        }
+        lidarInfoText.text = "LiDAR:\n— Hz"; // not yet measurable -- never show a fabricated 0.0
     }
 
     void UpdateObjects()
@@ -138,7 +170,11 @@ public class HUDController : MonoBehaviour
 
     void UpdateRisk(PerceptionFrameData frame)
     {
-        string risk = frame != null && frame.risk != null ? frame.risk.overallRisk : "safe";
+        // Missing risk data (no frame yet, or a bridge run without the collision stage wired in)
+        // is "unknown", NEVER fabricated as "safe" -- see docs/architecture.md "Dashboard and
+        // Unity as pure LiveState consumers": a HUD claiming SAFE with no actual confirmation
+        // behind it is an invented value, the exact thing this project's own rules forbid.
+        string risk = frame != null && frame.risk != null ? frame.risk.overallRisk : "unknown";
 
         if (riskText != null)
         {
@@ -205,10 +241,11 @@ public class HUDController : MonoBehaviour
     {
         switch (status)
         {
+            case "safe": return safeColor;
             case "caution": return warningColor;
             case "low_clearance": return warningColor;
             case "critical": return criticalColor;
-            default: return safeColor;
+            default: return disconnectedColor; // unrecognized/missing status -- never silently treated as safe
         }
     }
 
@@ -216,9 +253,10 @@ public class HUDController : MonoBehaviour
     {
         switch (risk)
         {
+            case "safe": return safeColor;
             case "warning": return warningColor;
             case "critical": return criticalColor;
-            default: return safeColor;
+            default: return disconnectedColor; // "unknown"/unrecognized -- never silently treated as safe
         }
     }
 }

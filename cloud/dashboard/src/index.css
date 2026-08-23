@@ -284,3 +284,59 @@ table.objects-table th {
   color: var(--text-dim);
   white-space: nowrap;
 }
+
+/* Live Perception Frame panel -- reuses .stat-tiles/.stat-tile, just under its own panel title */
+.live-frame-panel .stat-value {
+  font-size: 20px;
+}
+
+/* Tracking History panel */
+.track-history-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.track-history-controls select {
+  background: #0d131a;
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.track-history-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 6px;
+}
+
+/* Debug Data panel */
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 16px;
+}
+
+.debug-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #0d131a;
+  font-size: 13px;
+}
+
+.debug-row-label {
+  color: var(--text-dim);
+}
+
+.debug-row-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}

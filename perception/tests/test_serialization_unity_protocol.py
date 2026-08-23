@@ -9,14 +9,24 @@ import pytest
 from models.clearance import ClearanceAssessment, ClearanceDirection, ClearanceState, DirectionalClearance
 from models.collision import CollisionAssessment, CollisionRiskResult, RiskLevel, VehicleState
 from models.mapping import CellState, OccupancyGrid, VehiclePose
-from models.objects import DetectedObject, MovementState, ObjectClassification, Point2D, TrackingState, Velocity2D
+from models.objects import DetectedObject, MovementState, ObjectClassification, Point2D, ShapeFeatures, TrackingState, Velocity2D
 from models.tracking import TrackedScan
 from common.config import Settings
 from serialization import build_clearance_payload, build_config_payload, build_frame_message, pack_occupancy_grid
 from serialization.unity_protocol import build_object_payload, build_risk_payload, build_vehicle_payload
 
 
-def _object(track_id="track-1", has_velocity=True) -> DetectedObject:
+def _shape_features(aspect_ratio=2.5) -> ShapeFeatures:
+    return ShapeFeatures(
+        point_count=12, width=1.8, depth=0.72, aspect_ratio=aspect_ratio,
+        min_distance=4.6, max_distance=5.6, centroid_distance=5.1,
+        min_angle=10.0, max_angle=20.0, angular_width=10.0,
+        mean_distance=5.1, distance_variance=0.02, spatial_variance=0.05, point_density=10.0,
+        linearity_score=0.8, circularity_score=0.1,
+    )
+
+
+def _object(track_id="track-1", has_velocity=True, point_count=None, shape_features=None) -> DetectedObject:
     return DetectedObject(
         object_id=track_id, track_id=track_id, centroid=Point2D(x=5.0, y=1.0), width=1.8, depth=1.8,
         distance=5.1, classification=ObjectClassification.VEHICLE_LIKE, confidence=0.8642,
@@ -24,6 +34,7 @@ def _object(track_id="track-1", has_velocity=True) -> DetectedObject:
         predicted_position=Point2D(x=4.85, y=1.0) if has_velocity else None,
         tracking_state=TrackingState.CONFIRMED, movement_state=MovementState.MOVING if has_velocity else MovementState.UNKNOWN,
         track_age=10, track_hits=10, track_misses=0, timestamp=1000.0,
+        point_count=point_count, shape_features=shape_features,
     )
 
 
@@ -101,6 +112,16 @@ class TestBuildObjectPayload:
         payload = build_object_payload(_object())
         assert "shape_features" not in payload
         assert "classification_reason" not in payload
+
+    def test_point_count_and_aspect_ratio_included_when_available(self):
+        payload = build_object_payload(_object(point_count=12, shape_features=_shape_features(aspect_ratio=2.5)))
+        assert payload["point_count"] == 12
+        assert payload["aspect_ratio"] == 2.5
+
+    def test_point_count_and_aspect_ratio_null_when_not_populated(self):
+        payload = build_object_payload(_object())  # no point_count/shape_features passed
+        assert payload["point_count"] is None
+        assert payload["aspect_ratio"] is None
 
 
 class TestBuildRiskPayload:
@@ -256,3 +277,75 @@ class TestBuildFrameMessage:
     def test_include_points_true_with_no_points_given_is_none(self):
         message = build_frame_message(_tracked_scan(), include_points=True, raw_points=None)
         assert message["points"] is None
+
+    def test_no_live_state_leaves_new_fields_none(self):
+        message = build_frame_message(_tracked_scan(), collision_assessment=_assessment())
+        assert message["tracked_objects"] is None
+        assert message["sensor_status"] is None
+        assert message["performance_metrics"] is None
+        assert message["events"] is None
+
+
+class TestBuildFrameMessageWithLiveState:
+    """Wiring `pipeline.LiveStateBuilder`'s output onto the wire -- see docs/architecture.md
+    "Dashboard and Unity as pure LiveState consumers": Dashboard/Unity must render
+    `tracked_objects`/`events` exactly as the Edge computed them, never recompute TTC/risk/
+    tracking history themselves."""
+
+    def test_tracked_objects_present_and_joined_correctly(self):
+        from pipeline import LiveStateBuilder
+
+        builder = LiveStateBuilder(settings=Settings(_env_file=None))
+        scan = _tracked_scan()
+        assessment = _assessment()
+        live_state = builder.build(tracked_scan=scan, collision_assessment=assessment)
+
+        message = build_frame_message(scan, collision_assessment=assessment, live_state=live_state)
+        tracked = message["tracked_objects"]
+        assert tracked is not None and len(tracked) == 1
+        entry = tracked[0]
+        assert entry["track_id"] == "track-1"
+        assert entry["sensor_source"] == "lidar"
+        assert entry["first_seen"] is not None
+        assert entry["frames_tracked"] == 10  # DetectedObject.track_hits, verbatim
+        assert len(entry["trajectory"]) == 1
+        assert entry["trajectory"][0]["x"] == 5.0
+        # TTC/risk joined by track_id from the SAME assessment passed to LiveStateBuilder.build().
+        assert entry["ttc"] == assessment.results[0].ttc
+        assert entry["risk"] == assessment.results[0].risk_level.value
+
+    def test_events_only_include_this_scans_transitions(self):
+        from pipeline import LiveStateBuilder
+
+        builder = LiveStateBuilder(settings=Settings(_env_file=None))
+        scan0 = _tracked_scan()
+        live_state0 = builder.build(tracked_scan=scan0, collision_assessment=_assessment())
+        # Real transitions happened on scan 0 (track_created + a risk transition) -- but the WIRE
+        # payload for scan 0 must show them.
+        message0 = build_frame_message(scan0, collision_assessment=_assessment(), live_state=live_state0)
+        assert message0["events"], "scan 0 has real transitions and must not send an empty events list"
+        assert all(e["sequence_number"] == scan0.sequence_number for e in message0["events"])
+
+        # A second scan with NO new transitions must send an EMPTY events list, not the full
+        # retained backlog (bandwidth -- see build_events_payload's own docstring).
+        scan1 = TrackedScan(
+            scan_id="scan-def", sequence_number=8, source_id="unit-test", timestamp=1001.0,
+            objects=scan0.objects, noise_points=[], object_count=1, noise_count=0,
+            new_track_count=0, lost_track_count=0, coasting_track_count=0,
+        )
+        live_state1 = builder.build(tracked_scan=scan1, collision_assessment=_assessment())
+        message1 = build_frame_message(scan1, collision_assessment=_assessment(), live_state=live_state1)
+        assert message1["events"] == []
+        assert live_state1.events, "LiveState itself still retains the full backlog -- only the WIRE payload is filtered"
+
+    def test_sensor_status_and_performance_metrics_present(self):
+        from pipeline import LiveStateBuilder
+
+        builder = LiveStateBuilder(settings=Settings(_env_file=None))
+        scan = _tracked_scan()
+        live_state = builder.build(tracked_scan=scan, pipeline_processing_s=0.005)
+
+        message = build_frame_message(scan, live_state=live_state)
+        assert message["sensor_status"] == {"lidar": None, "radar": None}  # no PreprocessedScan supplied to LiveStateBuilder.build() in this test
+        assert message["performance_metrics"]["pipeline_processing_ms"] == 5.0
+        assert message["performance_metrics"]["scans_processed"] == 1
