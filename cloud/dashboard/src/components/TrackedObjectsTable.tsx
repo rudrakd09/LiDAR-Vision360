@@ -1,5 +1,12 @@
 import type { TrackedObjectData } from "../types";
 
+/** Classification is displayed EXACTLY as the Edge sent it -- never re-derived or re-assigned in
+ * the frontend. `"unknown"` is shown as "UNKNOWN" (an explicit "we don't know"), everything else
+ * with underscores turned to spaces. */
+function classificationLabel(c: TrackedObjectData["classification"]): string {
+  return c === "unknown" ? "UNKNOWN" : c.replace(/_/g, " ");
+}
+
 /** DETECTED OBJECTS: Track ID, Classification, Distance, Velocity, TTC, Risk, Sensor Source,
  * Confidence -- every field read directly off `PerceptionFrameData.tracked_objects` (the Edge's
  * own `LiveState.tracked_objects`, already joined by track_id at `pipeline.LiveStateBuilder`).
@@ -11,7 +18,7 @@ export function TrackedObjectsTable({ trackedObjects }: { trackedObjects: Tracke
     <section className="panel" data-testid="tracked-objects-table">
       <p className="panel-title">Detected Objects</p>
       {trackedObjects.length === 0 ? (
-        <div className="empty-state">No objects currently tracked</div>
+        <div className="empty-state">NO ACTIVE OBJECTS</div>
       ) : (
         <table className="objects-table">
           <thead>
@@ -32,7 +39,7 @@ export function TrackedObjectsTable({ trackedObjects }: { trackedObjects: Tracke
               return (
                 <tr key={obj.track_id}>
                   <td>#{obj.track_id}</td>
-                  <td>{obj.classification.replace(/_/g, " ")}</td>
+                  <td>{classificationLabel(obj.classification)}</td>
                   <td>{obj.distance.toFixed(1)} m</td>
                   <td>{speed != null ? `${speed.toFixed(1)} m/s` : "—"}</td>
                   <td>{obj.ttc != null ? `${obj.ttc.toFixed(1)} s` : "N/A"}</td>

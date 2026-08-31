@@ -87,6 +87,8 @@ def debug_stream_status(
         # stamped at PerceptionStreamServer.publish() time, -> this backend actually receiving it).
         latency_ms = round((c.last_message_at - c.last_transmission_timestamp) * 1000, 2)
 
+    last_error_age_ms = round((now - c.last_error_at) * 1000, 1) if c.last_error_at is not None else None
+
     sensor_ingestion_latency_ms = None
     if c.last_message_at is not None and frame is not None and frame.get("timestamp") is not None:
         # Sensor capture (the scan's OWN timestamp) -> this backend receiving it -- a larger,
@@ -121,4 +123,7 @@ def debug_stream_status(
         dashboard_clients_connected=hub.client_count,
         latency_ms=latency_ms,
         sensor_ingestion_latency_ms=sensor_ingestion_latency_ms,
+        last_error_code=c.last_error_code,
+        last_error_message=c.last_error_message,
+        last_error_age_ms=last_error_age_ms,
     )

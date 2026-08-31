@@ -65,6 +65,13 @@ class StreamStatusResponse(BaseModel):
     latency_ms: float | None  # last_message_at - last_transmission_timestamp (wire transit only), same-machine-clock assumption (see docs/communication.md "Latency measurement") -- None until both are known
     sensor_ingestion_latency_ms: float | None  # last_message_at - the frame's OWN timestamp (sensor capture -> backend receipt) -- includes the Edge's own pipeline processing time, a real, larger window than latency_ms above
 
+    # --- Last producer ERROR (Phase 3: hardware mode's HARDWARE_DATA_UNAVAILABLE + concrete
+    # reason). Cleared automatically on the next real PERCEPTION_FRAME. All None in normal
+    # operation. ---
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    last_error_age_ms: float | None = None
+
 
 class SessionResponse(BaseModel):
     id: str

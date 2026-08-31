@@ -20,15 +20,17 @@ const EVENT_LABELS: Record<LiveEvent["event_type"], string> = {
   ttc_change: "TTC Change",
   clearance: "Clearance Change",
   collision: "Risk Change",
+  connection: "Connection",
 };
 
 /** EVENT TIMELINE -- Detection/Track created, Track updated, Track lost, TTC change, Clearance
- * change, Risk change, all sourced from `PerceptionFrameData.events` (the Edge's own
- * `LiveState.events`, see `hooks/useLiveEvents.ts`) -- real-time via the same WebSocket stream
- * every other live panel uses, not a separate REST poll of a database. See docs/architecture.md
- * "Dashboard and Unity as pure LiveState consumers". */
-export function EventTimeline({ frame }: { frame: PerceptionFrameData | null }) {
-  const events = useLiveEvents(frame);
+ * change, Risk change (all from `PerceptionFrameData.events`, the Edge's own `LiveState.events`),
+ * plus client-observed Connection events (stream started / connection lost / data became stale /
+ * data recovered / hardware data unavailable -- see `hooks/useConnectionEvents.ts`). Both streams
+ * are real state transitions; neither is fabricated. Merged and sorted newest-first by timestamp. */
+export function EventTimeline({ frame, connectionEvents = [] }: { frame: PerceptionFrameData | null; connectionEvents?: LiveEvent[] }) {
+  const wireEvents = useLiveEvents(frame);
+  const events = [...connectionEvents, ...wireEvents].sort((a, b) => b.timestamp - a.timestamp);
 
   return (
     <section className="panel" data-testid="event-timeline-panel">

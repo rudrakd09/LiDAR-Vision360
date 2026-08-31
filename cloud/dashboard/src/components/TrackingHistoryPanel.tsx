@@ -69,7 +69,7 @@ export function TrackingHistoryPanel({ frame }: { frame: PerceptionFrameData | n
     return (
       <section className="panel" data-testid="tracking-history-panel">
         <p className="panel-title">Tracking</p>
-        <div className="empty-state">No objects currently tracked</div>
+        <div className="empty-state">NO ACTIVE OBJECTS</div>
       </section>
     );
   }

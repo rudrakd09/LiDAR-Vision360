@@ -47,6 +47,14 @@ class ConnectionInfo:
     last_transmission_timestamp: float | None = None  # envelope's own transmission_timestamp of the most recent message -- for latency_ms, see routes/debug.py
     measured_scan_rate_hz: float | None = None  # from the Edge's own, per-scan-measured LiveState.performance_metrics.measured_scan_rate_hz -- real, not the possibly-stale SYSTEM_STATUS value above
 
+    # --- Last ERROR message from the producer (e.g. Phase-3 hardware mode's
+    # HARDWARE_DATA_UNAVAILABLE, with a concrete reason). Cleared the moment a real PERCEPTION_FRAME
+    # lands again (record_frame), so a recovered stream never keeps showing a stale error. Surfaced
+    # by GET /debug/stream-status so a person can see WHY the stream is not delivering. ---
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    last_error_at: float | None = None
+
 
 def compute_session_status(connection: ConnectionInfo, now: float, stale_threshold_s: float) -> str:
     """"active" | "stale" | "disconnected" -- deliberately a *separate* concept from `connection.
@@ -116,6 +124,13 @@ class LatestState:
             self.connection.last_frame_id = None
             self.connection.measured_scan_rate_hz = None
 
+    def record_error(self, code: str | None, message: str | None) -> None:
+        """Remember the most recent producer ERROR message (see `ConnectionInfo.last_error_*`)."""
+        with self._lock:
+            self.connection.last_error_code = code
+            self.connection.last_error_message = message
+            self.connection.last_error_at = time.time() if code is not None else None
+
     def record_frame(self, frame_data: dict[str, Any], frame_id: int | None) -> None:
         now = time.time()
         with self._lock:
@@ -125,6 +140,10 @@ class LatestState:
             self.connection.session_frames_received += 1
             self.connection.last_frame_id = frame_id
             self.connection.last_message_at = now
+            # A real frame arrived -> any prior "stream unavailable" error is no longer current.
+            self.connection.last_error_code = None
+            self.connection.last_error_message = None
+            self.connection.last_error_at = None
 
             timestamp = frame_data.get("timestamp")
             for obj in frame_data.get("objects") or []:
@@ -265,4 +284,6 @@ def _connection_dict(info: ConnectionInfo, session_status: str) -> dict[str, Any
         "session_id": info.session_id,
         "session_frames_received": info.session_frames_received,
         "measured_scan_rate_hz": info.measured_scan_rate_hz,
+        "last_error_code": info.last_error_code,
+        "last_error_message": info.last_error_message,
     }

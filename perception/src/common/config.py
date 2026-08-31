@@ -593,6 +593,86 @@ class Settings(BaseSettings):
     # defined) | "none" (no on-wire timestamp -- the Edge stamps its own receive time instead).
     stm32_timestamp_format: str | None = None
 
+    # --- ESP32 gateway (Phase 3, datasources.esp32) -- the STM32 -> ESP32 -> Wi-Fi -> Edge link
+    # that delivers ALREADY-PROCESSED perception frames (models.stm32_processed.STM32ProcessedFrame),
+    # NOT raw sensor data. Selected by `data_source == "hardware"`; the Edge does not re-run
+    # perception on this data. Every value whose meaning depends on the hardware team's
+    # specification is `None`/placeholder by default; `ESP32Source.connect()` raises
+    # `ESP32ConfigurationError` (never a silent fallback to simulation) if a required one is unset.
+    # See docs/esp32-integration.md.
+
+    # Which transport carries the ESP32 link. `None` (unset) = not configured -> connect() fails
+    # loudly. `"mock"` = the in-process SIMULATED ESP32 transport (scripted frames, development/
+    # demo only -- logged loudly as NOT real hardware). Real values ("tcp"/"udp"/"mqtt"/
+    # "websocket"/...) are deliberately NOT enumerated or implemented here -- the Wi-Fi protocol
+    # is not specified yet; a real transport is a drop-in datasources.esp32.transport.ESP32Transport.
+    esp32_transport: str | None = None
+
+    # Connection target -- unset until the hardware team provides them. No default IP/port invented.
+    esp32_host: str | None = None
+    esp32_port: int | None = None
+
+    # Optional auth material for the future transport (token/PSK/...). Unset; never invented.
+    esp32_auth_token: str | None = None
+    # Wire-format hint for a future non-JSON codec (framing/encoding name). Unset; the reference
+    # codec is JSON (datasources.stm32.processed.JsonProcessedFrameCodec).
+    esp32_protocol: str | None = None
+
+    # Connection lifecycle -- ordinary operational parameters (not protocol facts), so these get
+    # sensible defaults, fully overridable. Mirrors the stm32_* timing block above.
+    esp32_connect_timeout_s: float = 5.0
+    esp32_read_timeout_s: float = 2.0
+    esp32_reconnect_initial_backoff_s: float = 1.0
+    esp32_reconnect_max_backoff_s: float = 10.0
+    esp32_max_reconnect_attempts: int | None = None  # None = retry indefinitely
+
+    # Freshness: a received processed frame older than this (its own metadata.timestamp vs. Edge
+    # receive time) marks the source STALE -- old object/risk/TTC data is NOT presented as current.
+    esp32_frame_stale_after_s: float = 1.0
+    # No frame (or heartbeat) for this long while the transport is still open -> treat as a
+    # timeout and reconnect. Several stale-thresholds, to absorb ordinary jitter without flapping
+    # (same reasoning as streaming_connection_timeout_s).
+    esp32_heartbeat_timeout_s: float = 6.0
+
+    # Sequence-number wraparound modulus for the ESP32 link's own counter (e.g. 65536 for a
+    # uint16). None = the counter does not wrap. Reuses datasources.stm32.sequence.SequenceValidator.
+    esp32_sequence_modulus: int | None = None
+
+    # Only for `esp32_transport == "mock"`: how many scripted frames the SIMULATED ESP32 transport
+    # emits before looping. Not a hardware value -- a development aid.
+    esp32_mock_frame_count: int = 200
+
+    # Only for `esp32_transport == "mock"`: which MOCK STM32 HARDWARE OUTPUT scene the SIMULATED
+    # ESP32 transport replays (datasources.esp32.mock_stm32). Not a hardware value -- a Phase-10
+    # software-readiness aid. None / "approaching_vehicle" = the legacy scripted sequence;
+    # "realtime_arc" | "multi_object" | "tracking" = the Phase-10 scenes.
+    esp32_mock_scenario: str | None = None
+
+    # --- STM32 -> Vehicle-ECU CAN output (Phase 5, can_output/) -- a SOFTWARE MODEL of the CAN
+    # transmit stage the STM32 firmware performs in the real vehicle. Independent of the ESP32
+    # path (neither depends on the other). Off by default; when on, produces SIMULATED CAN OUTPUT
+    # (mock/logging sink -- no bus). NO CAN parameter is invented: bitrate, IDs, DLC, byte layout,
+    # scaling, checksum choice, and periods are all `None` (PENDING the hardware team's CAN/DBC
+    # spec) and reported by CANOutputConfig.pending_hardware_parameters(). See docs/can-output.md.
+    can_output_enabled: bool = False
+    can_output_backend: str = "mock"  # "mock" (SIMULATED CAN OUTPUT) | "logging" (SIM-CAN log sink)
+
+    # --- PENDING hardware / DBC spec -- never invented ---
+    can_output_bitrate_bps: int | None = None            # e.g. 250000 / 500000
+    can_output_interface: str | None = None              # e.g. "can0", "PCAN_USBBUS1"
+    can_output_default_cycle_time_ms: float | None = None  # fallback tx period for a message with no cycle_time_ms
+    can_output_checksum_algorithm: str | None = None     # none|xor8|sum8|crc8|crc16_ccitt -- WHICH is PENDING
+    can_output_sequence_modulus: int | None = None       # rolling-counter wrap (e.g. 16 for a 4-bit counter)
+    # Per-message CAN IDs / DLC / byte layout live on the external CANOutputConfig message specs,
+    # not here -- also all `None`/PENDING (can_output.build_default_message_catalog()).
+
+    # --- Edge-side operational guards (NOT hardware facts) -- sensible defaults, overridable ---
+    can_output_max_transmit_rate_hz: float = 100.0       # hard cap so the model never floods the "bus"
+    can_output_queue_max_frames: int = 64                # bounded outgoing queue; overflow drops oldest, counted
+    can_output_require_fully_specified: bool = False     # True -> refuse to start until every PENDING field is filled
+    can_output_bus_recovery_initial_backoff_s: float = 1.0
+    can_output_bus_recovery_max_backoff_s: float = 10.0
+
     # --- Sensor fusion (Phase 9, fusion.FusionEngine) -- LiDAR+radar association/gating
     # parameters. Unlike the stm32_* protocol fields above, these are NOT protocol facts (nothing
     # here depends on the real R121 wire format) -- they are Edge-side tuning knobs for the

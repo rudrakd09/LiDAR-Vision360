@@ -1,18 +1,12 @@
-import { useEffect, useState } from "react";
-import { api } from "../api/client";
 import type { DashboardConnectionState } from "../api/useLiveSocket";
-import { useStaleness } from "../hooks/useStaleness";
 import type { ConnectionStatus, PerceptionFrameData, StreamStatus } from "../types";
-
-const POLL_INTERVAL_MS = 2000; // same cadence useLiveSocket's own supplementary /api/status poll already uses
 
 /**
  * SYSTEM STATUS + DATA SOURCE + LIVE DATA -- every value here is either read directly off a real
- * WS-pushed `PerceptionFrameData`/`ConnectionStatus`, or off `GET /debug/stream-status` (the one
- * REST endpoint that already computes `edge_status`/`backend_status`/`websocket_status`/
- * `latency_ms` server-side -- see docs/architecture.md "Session and sequence management"). This
- * component never calculates any of these itself, only displays them -- see docs/architecture.md
- * "Dashboard and Unity as pure LiveState consumers".
+ * WS-pushed `PerceptionFrameData`/`ConnectionStatus`, or off `GET /debug/stream-status` (fetched
+ * once by `App` via `useStreamStatus` and passed in). This component never calculates any of
+ * these itself, only displays them -- see docs/architecture.md "Dashboard and Unity as pure
+ * LiveState consumers".
  */
 export function SystemPanel({
   dashboardConnectionState,
@@ -22,6 +16,9 @@ export function SystemPanel({
   framesReceivedByClient,
   websocketLatencyMs,
   endToEndLatencyMs,
+  clientMeasuredRateHz,
+  isStale,
+  streamStatus,
 }: {
   dashboardConnectionState: DashboardConnectionState;
   backendConnection: ConnectionStatus | null;
@@ -34,39 +31,33 @@ export function SystemPanel({
   /** Real, measured from the frame's own capture `timestamp` vs. `Date.now()` (this tab). `null`
    * until measurable. */
   endToEndLatencyMs: number | null;
+  /** This tab's own (frames applied / elapsed) rate -- the Scan Rate fallback when the Edge's
+   * own `measured_scan_rate_hz` is not on the wire. `null` until >= 2 frames this session. */
+  clientMeasuredRateHz: number | null;
+  /** From `useStaleness` (owned by `App`, shared with the Event Timeline). */
+  isStale: boolean;
+  /** From `useStreamStatus` (owned by `App`). */
+  streamStatus: StreamStatus | null;
 }) {
-  const [streamStatus, setStreamStatus] = useState<StreamStatus | null>(null);
-  const isStale = useStaleness(lastFrameReceivedAt);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function refresh() {
-      try {
-        const status = await api.debugStreamStatus();
-        if (!cancelled && status) setStreamStatus(status);
-      } catch {
-        // backend unreachable for this one poll -- leave the last-known status showing
-      }
-    }
-    refresh();
-    const interval = setInterval(refresh, POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, []);
-
   const lidarStatus = latestFrame?.sensor_status?.lidar ?? null;
   const radarStatus = latestFrame?.sensor_status?.radar ?? undefined; // undefined = payload predates the field; null = real "no radar sensor"
   const dataSource = latestFrame?.config?.data_source ?? null;
 
+  // Phase 3: hardware (ESP32) mode. `data_source` only rides on a frame, so when NO frame is
+  // arriving we fall back to the backend's own last-ERROR record (set by the ESP32 edge loop).
+  const hardwareUnavailable = streamStatus?.last_error_code === "HARDWARE_DATA_UNAVAILABLE";
+  const isHardwareMode = dataSource === "hardware" || hardwareUnavailable;
+  const esp32BadgeValue = hardwareUnavailable ? "UNAVAILABLE" : isStale ? "STALE" : latestFrame != null ? "LIVE" : "CONNECTING";
+
   let systemLabel: string;
   let systemClass: string;
-  if (latestFrame == null) {
+  if (latestFrame == null || dashboardConnectionState !== "open") {
+    // never received anything, OR the WebSocket itself is down/reconnecting -- either way the
+    // dashboard is NOT live and must not look live (see requirement 11).
     systemLabel = "DISCONNECTED";
     systemClass = "state-closed";
   } else if (isStale) {
-    systemLabel = "STALE";
+    systemLabel = "STALE DATA";
     systemClass = "state-reconnecting";
   } else {
     systemLabel = "LIVE";
@@ -86,12 +77,21 @@ export function SystemPanel({
           {/* radarStatus is always `null` in this project's current 2D-LiDAR-only scope (see
               README "Important sensor limitation") -- an honest "NOT INSTALLED", never a fabricated reading. */}
           <StatusBadge label="Radar" value={radarStatus === undefined ? "—" : "NOT INSTALLED"} className="state-closed" />
-          <StatusBadge label="STM32" value={dataSource === "hardware" ? "NOT IMPLEMENTED" : "N/A (simulation mode)"} className="state-closed" />
+          {isHardwareMode ? (
+            <StatusBadge label="ESP32" value={esp32BadgeValue} className={esp32BadgeValue === "LIVE" ? "state-open" : "state-closed"} title="STM32 -> ESP32 -> Wi-Fi processed-frame link (Phase 3)." />
+          ) : (
+            <StatusBadge label="STM32" value="N/A (simulation mode)" className="state-closed" />
+          )}
           <StatusBadge label="Edge" value={edgeStatus.toUpperCase()} className={edgeUp ? "state-open" : "state-closed"} />
           <StatusBadge label="Backend" value={(streamStatus?.backend_status ?? (backendUp ? "ok" : "unreachable")).toUpperCase()} className={backendUp ? "state-open" : "state-closed"} />
           <StatusBadge label="WebSocket" value={dashboardConnectionState.toUpperCase()} className={backendUp ? "state-open" : "state-closed"} />
           <StatusBadge label="System" value={systemLabel} className={systemClass} title="Whether a new perception frame has arrived within the last few seconds." />
         </div>
+        {hardwareUnavailable && (
+          <p data-testid="hardware-unavailable" className="live-dot state-reconnecting" style={{ marginTop: 8, display: "inline-block" }}>
+            HARDWARE DATA UNAVAILABLE — {streamStatus?.last_error_message ?? "no processed frames from ESP32"}
+          </p>
+        )}
       </section>
 
       <section className="panel" data-testid="data-source-panel">
@@ -122,12 +122,16 @@ export function SystemPanel({
             <div className="stat-label">Frame Age</div>
             <div className="stat-value">{lastFrameReceivedAt != null ? `${Math.max(0, Date.now() - lastFrameReceivedAt)} ms` : "—"}</div>
           </div>
-          <div className="stat-tile" title="Real, Edge-measured (LiveState.performance_metrics.measured_scan_rate_hz) where available.">
+          <div className="stat-tile" title="Real, Edge-measured (LiveState.performance_metrics.measured_scan_rate_hz) where available; otherwise this tab's own frames-received / elapsed. Never a fixed constant.">
             <div className="stat-label">Scan Rate</div>
             <div className="stat-value">{
               latestFrame?.performance_metrics?.measured_scan_rate_hz != null
                 ? `${latestFrame.performance_metrics.measured_scan_rate_hz.toFixed(1)} Hz`
-                : streamStatus?.scan_rate_hz != null ? `${streamStatus.scan_rate_hz.toFixed(1)} Hz` : "—"
+                : streamStatus?.measured_scan_rate_hz != null
+                  ? `${streamStatus.measured_scan_rate_hz.toFixed(1)} Hz`
+                  : clientMeasuredRateHz != null
+                    ? `${clientMeasuredRateHz.toFixed(1)} Hz`
+                    : streamStatus?.scan_rate_hz != null ? `${streamStatus.scan_rate_hz.toFixed(1)} Hz (target)` : "—"
             }</div>
           </div>
           <div className="stat-tile" title="Backend-computed: last_message_at - transmission_timestamp (wire transit only, same-machine clock).">

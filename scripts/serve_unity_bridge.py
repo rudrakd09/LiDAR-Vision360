@@ -50,6 +50,17 @@ logger = get_logger(__name__)
 
 
 def run(args: argparse.Namespace, settings: Settings) -> None:
+    # Hardware mode (Phase 3): the STM32 is the perception node; the Edge receives ALREADY-
+    # PROCESSED frames over the ESP32 -> Wi-Fi link and must NOT re-run the pipeline below. This
+    # dispatches to the dedicated hardware edge loop (datasources.esp32.edge_runner) and returns.
+    # Simulation mode (the default) falls through to the unchanged pipeline run below.
+    if settings.data_source == "hardware":
+        from datasources.esp32.edge_runner import run_esp32_edge
+
+        logger.info("[BRIDGE] DATA_SOURCE=hardware -> ESP32 edge loop (no local perception pipeline).")
+        run_esp32_edge(settings, rate_hz=args.rate)
+        return
+
     json_server = PerceptionStreamServer(settings=settings)
     raw_server = RawLidarStreamServer(settings=settings)
     try:

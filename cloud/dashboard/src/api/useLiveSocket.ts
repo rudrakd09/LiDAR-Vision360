@@ -49,6 +49,12 @@ export interface LiveSocketState {
    * combined), computed from the frame's own real capture timestamp vs. this tab's own real
    * receipt time. `null` before any frame has ever arrived. */
   endToEndLatencyMs: number | null;
+  /** This tab's OWN measured update rate: (frames applied this session) / (elapsed wall-clock
+   * since the first applied frame). A real received/elapsed figure -- never a fixed constant --
+   * used as the Scan Rate fallback when the Edge's own `measured_scan_rate_hz` is not on the wire
+   * (older producer, or the very first frame of a session). `null` until >= 2 frames of the
+   * current session have been applied. Resets on every session boundary. */
+  clientMeasuredRateHz: number | null;
 }
 
 const RECONNECT_DELAY_MS = 2000;
@@ -63,7 +69,11 @@ export function useLiveSocket(): LiveSocketState {
     framesReceivedByClient: 0,
     websocketLatencyMs: null,
     endToEndLatencyMs: null,
+    clientMeasuredRateHz: null,
   });
+
+  // (sessionKey, first-frame wall-clock ms, frames-applied-this-session) -- for clientMeasuredRateHz.
+  const rateWindow = useRef<{ sessionKey: string | null; startedAt: number; count: number } | null>(null);
 
   const shouldReconnect = useRef(true);
   // The last frame this hook actually APPLIED (not just received) -- see
@@ -119,6 +129,21 @@ export function useLiveSocket(): LiveSocketState {
           // (see docs/architecture.md "Real-time performance monitoring": no fake 0ms).
           const websocketLatencyMs = message.broadcast_at != null ? Math.max(0, receivedAt - message.broadcast_at * 1000) : null;
           const endToEndLatencyMs = Math.max(0, receivedAt - message.data.timestamp * 1000);
+
+          // Client-measured update rate: frames applied this session / elapsed since the first.
+          // Reset (to null) on every session boundary -- a new session's counter starts over.
+          const sessionKey = incoming.sessionId ?? message.data.source_id;
+          let clientMeasuredRateHz: number | null = null;
+          if (rateWindow.current == null || rateWindow.current.sessionKey !== sessionKey) {
+            rateWindow.current = { sessionKey, startedAt: receivedAt, count: 1 };
+          } else {
+            rateWindow.current.count += 1;
+            const elapsedS = (receivedAt - rateWindow.current.startedAt) / 1000;
+            if (elapsedS > 0 && rateWindow.current.count >= 2) {
+              clientMeasuredRateHz = (rateWindow.current.count - 1) / elapsedS;
+            }
+          }
+
           setState((prev) => ({
             ...prev,
             latestFrame: message.data,
@@ -126,6 +151,7 @@ export function useLiveSocket(): LiveSocketState {
             framesReceivedByClient: prev.framesReceivedByClient + 1,
             websocketLatencyMs,
             endToEndLatencyMs,
+            clientMeasuredRateHz,
           }));
         } else if (message.type === "error") {
           setState((prev) => ({ ...prev, lastError: message.data.message }));

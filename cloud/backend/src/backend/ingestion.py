@@ -227,6 +227,11 @@ class PerceptionIngestor:
             self._handle_system_status(message)
             self._broadcast({"type": "status", "data": message.get("data")})
         elif message_type == "ERROR":
+            err = message.get("data") or {}
+            # Remember it (e.g. Phase-3 hardware mode's HARDWARE_DATA_UNAVAILABLE + reason) so a
+            # person hitting GET /debug/stream-status can see WHY frames stopped -- cleared
+            # automatically on the next real PERCEPTION_FRAME (see LatestState.record_frame).
+            self.state.record_error(err.get("code"), err.get("message"))
             self._broadcast({"type": "error", "data": message.get("data")})
         # unknown message_type -- ignore, matching PerceptionTCPClient.cs's own tolerance
 
@@ -272,6 +277,7 @@ class PerceptionIngestor:
 
         self.state.record_frame(data, frame_id)
         self._update_track_cache(data)
+        self._backfill_missing_tracks(data)
         self._persist_events_from_frame(data, frame_id)
         # `broadcast_at`: real wall-clock time this backend is about to broadcast over /ws/live --
         # lets a connected dashboard measure its OWN WebSocket-leg latency
@@ -319,8 +325,22 @@ class PerceptionIngestor:
             entry["frames_tracked"] = obj.get("frames_tracked")
             entry.setdefault("first_seen_at", obj.get("first_seen") or data.get("timestamp"))
 
+    def _backfill_missing_tracks(self, data: dict[str, Any]) -> None:
+        """Persist a `TrackRecord` for any `track_id` present in `data.tracked_objects` that this
+        session has not written yet -- i.e. its `track_created` event was never observed (backend
+        connected mid-session, or the very first scan's event delta was missed; see project note
+        "event-history cold-start gap"). Idempotent: `_persist_track_created` skips a track whose
+        `db_id` is already set, so this never duplicates the normal `track_created`-event path,
+        and it never writes per frame (only on a track_id's first sighting this session)."""
+        for obj in data.get("tracked_objects") or []:
+            track_id = obj.get("track_id")
+            if track_id and "db_id" not in self._track_cache.get(track_id, {}):
+                self._persist_track_created(track_id, data.get("timestamp"))
+
     def _persist_track_created(self, track_id: str, timestamp: float | None) -> None:
         snapshot = self._track_cache.get(track_id, {})
+        if snapshot.get("db_id") is not None:
+            return  # already persisted this session -- idempotent (see _backfill_missing_tracks)
         record = TrackRecord(
             session_id=self.state.current_session_id or "unknown",
             source_id=self.state.connection.source_id,

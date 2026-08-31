@@ -8,7 +8,7 @@
  * tests exist to catch, and a hand-written fixture could accidentally "fix" that mismatch by
  * construction.
  */
-import type { LiveMessage, PerceptionObject, TrackedObjectData, CollisionResult } from "../types";
+import type { LiveMessage, PerceptionObject, TrackedObjectData, CollisionResult, StreamStatus } from "../types";
 
 /** These fixtures predate `tracked_objects`/`session_id`/`events`/`sensor_status`/
  * `performance_metrics` being added to the wire (see docs/architecture.md "Dashboard and Unity as
@@ -300,4 +300,102 @@ export const REAL_SCENARIO_SWITCH_FRAME_MESSAGE: LiveMessage = {
     map: null,
     points: null,
   },
+};
+
+/**
+ * A REAL hardware-mode (`DATA_SOURCE=hardware`, `ESP32_TRANSPORT=mock`) wire frame -- generated
+ * by driving an actual `STM32ProcessedFrame` through `MockESP32Transport -> ESP32Source ->
+ * ProcessedFrameToLiveState -> build_perception_frame_message` (Phase 3 path), not hand-typed.
+ * `source_id` is `stm32_hardware`, `config.data_source` is `"hardware"`, and `sensor_source` is
+ * `"lidar+radar"` (real fusion attribution). Objects carry no width/depth/shape (the STM32 does
+ * not transmit geometry) -- exactly as the Edge sends it.
+ */
+export const REAL_HARDWARE_FRAME_MESSAGE: LiveMessage = {
+  type: "frame",
+  frame_id: 0,
+  broadcast_at: 1786602600.1,
+  data: {
+    session_id: "hw-session-1",
+    timestamp: 1786602600.0,
+    scan_id: "esp32-0",
+    sequence_number: 0,
+    source_id: "stm32_hardware",
+    objects: [
+      {
+        track_id: "stm32-track-1", classification: "vehicle_like", confidence: 0.9,
+        centroid: { x: 6.0, y: 0.0 }, width: 0.0, depth: 0.0, distance: 6.0,
+        velocity: { vx: -2.0, vy: 0.0 }, direction: null, predicted_position: null,
+        tracking_state: null, movement_state: null, track_age: null, track_hits: null,
+        track_misses: null, point_count: null, aspect_ratio: null,
+      },
+    ],
+    tracked_objects: [
+      {
+        track_id: "stm32-track-1", classification: "vehicle_like", confidence: 0.9,
+        x: 6.0, y: 0.0, distance: 6.0, velocity: { vx: -2.0, vy: 0.0 },
+        sensor_source: "lidar+radar", first_seen: 1786602600.0, last_seen: 1786602600.0,
+        frames_tracked: null,
+        trajectory: [
+          { frame_id: 0, timestamp: 1786602600.0, x: 6.0, y: 0.0, vx: -2.0, vy: 0.0, distance: 6.0, classification: "vehicle_like", tracking_state: null },
+        ],
+        ttc: 3.0, risk: "warning", tracking_state: null, movement_state: null,
+      },
+    ],
+    risk: {
+      overall_risk: "warning",
+      most_critical: {
+        track_id: "stm32-track-1", classification: "vehicle_like", distance: 6.0, relative_speed: 2.0,
+        in_projected_path: true, ttc: 3.0, collision_predicted: false, predicted_collision_time: null,
+        predicted_collision_position: null, risk_level: "warning", risk_score: null,
+        reason: ["scripted approaching vehicle at 6.0 m"],
+      },
+      results: [
+        {
+          track_id: "stm32-track-1", classification: "vehicle_like", distance: 6.0, relative_speed: 2.0,
+          in_projected_path: true, ttc: 3.0, collision_predicted: false, predicted_collision_time: null,
+          predicted_collision_position: null, risk_level: "warning", risk_score: null,
+          reason: ["scripted approaching vehicle at 6.0 m"],
+        },
+      ],
+    },
+    clearance: {
+      front: { direction: "front", distance_m: 3.5, nearest_point: null },
+      rear: { direction: "rear", distance_m: 8.0, nearest_point: null },
+      left: { direction: "left", distance_m: 3.0, nearest_point: null },
+      right: { direction: "right", distance_m: 3.0, nearest_point: null },
+      min_clearance_m: 3.0, min_direction: "left", corridor_width_m: 6.0,
+      overall_status: "safe", reason: ["Directional clearance from STM32 processed frame."],
+    },
+    vehicle: { x: 0.0, y: 0.0, heading: 0.0, speed_mps: 0.0 },
+    config: {
+      vehicle_length_m: 4.5, vehicle_width_m: 1.8, front_safety_margin_m: 1.0, rear_safety_margin_m: 0.5,
+      left_safety_margin_m: 0.3, right_safety_margin_m: 0.3, collision_warning_distance_m: 5.0,
+      collision_critical_distance_m: 2.0, collision_warning_ttc_s: 4.0, collision_critical_ttc_s: 2.0,
+      lidar_range_max_m: 12.0, data_source: "hardware",
+    },
+    sensor_status: {
+      lidar: { connected: true, point_count: null, valid_percentage: null, mean_distance_m: null },
+      radar: { connected: true, point_count: null, valid_percentage: null, mean_distance_m: null },
+    },
+    performance_metrics: { pipeline_processing_ms: 5.0, measured_scan_interval_s: null, measured_scan_rate_hz: null, scans_processed: 1 },
+    events: [
+      { event_type: "track_created", sequence_number: 0, timestamp: 1786602600.0, track_id: "stm32-track-1", previous_value: null, new_value: "unknown", summary: "Track stm32-track-1 created (vehicle_like)." },
+    ],
+    map: null,
+    points: null,
+  },
+};
+
+/** `GET /debug/stream-status` while hardware mode has NO data -- the ESP32 edge loop published a
+ * HARDWARE_DATA_UNAVAILABLE ERROR, which `backend.ingestion` recorded on the connection. */
+export const HARDWARE_UNAVAILABLE_STREAM_STATUS: StreamStatus = {
+  connected: true, last_frame_id: null, last_frame_timestamp: null, frames_received: 0, frames_dropped: 0,
+  source_id: "stm32_hardware", age_ms: null, risk: null, object_count: 0, track_count: 0,
+  session_id: "hw-session-2", last_sequence: null, last_timestamp: null, frame_age_ms: null,
+  scan_rate_hz: null, measured_scan_rate_hz: null, configured_scan_rate_hz: null, objects: 0, tracks: 0,
+  backend_status: "ok", edge_status: "connected", websocket_status: "connected", dashboard_clients_connected: 1,
+  latency_ms: null, sensor_ingestion_latency_ms: null,
+  last_error_code: "HARDWARE_DATA_UNAVAILABLE",
+  last_error_message: "stale data: newest processed frame is 4.2s old",
+  last_error_age_ms: 1200,
 };

@@ -195,7 +195,10 @@ export interface TrackedObjectData {
  * into the running Event Timeline client-side (buffering a server-told stream, not calculating
  * anything -- same pattern this project already established for trajectories). */
 export interface LiveEvent {
-  event_type: "collision" | "clearance" | "track_created" | "track_lost" | "tracking_state_changed" | "ttc_change";
+  /** `"connection"` entries are added client-side by `hooks/useConnectionEvents` from real
+   * observed connection/freshness transitions (not from the wire); all others are the Edge's own
+   * `LiveState.events`. */
+  event_type: "collision" | "clearance" | "track_created" | "track_lost" | "tracking_state_changed" | "ttc_change" | "connection";
   sequence_number: number;
   timestamp: number;
   track_id: string | null;
@@ -344,6 +347,13 @@ export interface StreamStatus {
   /** Sensor capture -> backend receipt (includes Edge pipeline processing time) -- see
    * docs/architecture.md "Real-time performance monitoring". */
   sensor_ingestion_latency_ms?: number | null;
+  /** Last producer ERROR message -- Phase 3 hardware mode sets `code =
+   * "HARDWARE_DATA_UNAVAILABLE"` with a concrete `message` (ESP32 disconnected / timeout /
+   * stale data / invalid frame / protocol error). Cleared automatically on the next real
+   * perception frame. All null/absent in normal operation. */
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  last_error_age_ms?: number | null;
 }
 
 export interface SessionRecord {

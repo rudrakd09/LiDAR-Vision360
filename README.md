@@ -7,10 +7,14 @@ Full specification: [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) (preser
 written; this README tracks actual implementation status, per that document's own instruction).
 
 > **Read this first:** the perception pipeline, tracking, TTC, clearance, risk, the sensor-fusion
-> architecture, and the Dashboard/Unity/PostgreSQL flow are all implemented and tested — but
-> **against simulation and synthetic data only.** No physical LiDAR, Radar, or STM32 board has
-> been connected to this system. See [Current Status](#current-status) and
-> [Limitations](#limitations) before assuming otherwise.
+> architecture, the STM32→ESP32→Edge hardware-input framework (`ESP32Source` + the Phase-2
+> processed-perception contract), the STM32→ECU CAN-output software model, and the
+> Dashboard/Unity/PostgreSQL flow are all implemented and tested — but **against simulation,
+> mock-transport, and synthetic data only.** **No physical A3M1, R121, STM32, or ESP32 has been
+> connected to this system, and no hardware/DBC specification has been supplied — so
+> `DATA_SOURCE=hardware` cannot run against real hardware yet.** See
+> [Two Modes](#two-modes-simulation-and-hardware), [Current Status](#current-status),
+> [Limitations](#limitations), and `docs/hardware-validation-procedure.md`.
 
 ---
 
@@ -24,10 +28,14 @@ real-time web dashboard, and a PostgreSQL-backed event history.
 
 The system is built **hardware-independent first**: every stage above is developed and validated
 against a configurable 2D LiDAR simulator (10 scenarios) before any physical sensor is involved.
-A separate, parallel effort has since built the *framework* for real STM32-based hardware input
-(serial transport, framing, CRC, sequence validation, reconnection, sensor fusion) — but that
-framework has only ever been exercised with synthetic data. This is the central distinction this
-README maintains throughout.
+A parallel effort has since built the *framework* for the real hardware architecture — in which
+the **STM32 is the primary perception node** (it runs preprocessing → fusion → detection →
+tracking → TTC → clearance → risk itself) and the Edge PC receives **already-processed**
+perception frames over **ESP32 → Wi-Fi** and only validates / monitors / visualises / stores
+them. That framework (`ESP32Source`, the protocol-independent `STM32ProcessedFrame` contract, the
+STM32→ECU CAN-output software model) has only ever been exercised with a mock transport and
+synthetic frames. This distinction — **implemented & tested vs. physically validated** — is
+maintained throughout.
 
 ## Objectives
 
@@ -37,7 +45,10 @@ fusion work added since:
 | Objective | Status |
 |---|---|
 | Simulated 360° LiDAR data generation | ✅ Implemented (`simulator/`, 10 scenarios) |
-| Real LiDAR data integration via hardware adapter | 🔶 Framework implemented (`STM32Source`); real protocol/hardware not yet connected |
+| Real LiDAR data integration via hardware adapter | 🔶 Framework implemented (`STM32Source` raw-serial adapter + `ESP32Source` processed-frame receiver); real protocol/hardware not yet connected |
+| STM32 processed-perception data contract | ✅ Implemented (`models.stm32_processed.STM32ProcessedFrame`, versioned + validated) |
+| ESP32 gateway (STM32 → ESP32 → Wi-Fi → Edge) | 🔶 `ESP32Source` + replaceable transport implemented & mock-tested; real Wi-Fi protocol pending |
+| STM32 → Vehicle-ECU CAN output | 🔶 Configurable software model implemented & mock-tested (`can_output/`); no CAN/DBC spec, no bus |
 | Preprocessing, noise/outlier filtering | ✅ Implemented |
 | Polar → Cartesian conversion | ✅ Implemented |
 | Obstacle clustering / segmentation | ✅ Implemented (DBSCAN) |
@@ -49,7 +60,7 @@ fusion work added since:
 | Cloud telemetry, real-time dashboard | ✅ Implemented (FastAPI + WebSocket + React) |
 | Historical analytics | 🔶 Bounded event/session history in PostgreSQL; no analytics UI beyond the dashboard's own timeline |
 | Safety alerts | 🔶 Risk/clearance levels are computed and surfaced; no separate alerting/notification channel |
-| Radar integration / sensor fusion | 🔶 `FusionEngine` implemented and tested against synthetic `RadarReading` data; no real R121 data processed |
+| Radar integration / sensor fusion | 🔶 `FusionEngine` implemented and tested against synthetic `RadarReading` data (simulation mode); in hardware mode fusion runs **on the STM32** — no real R121 data processed either way |
 
 ## Key Features
 
@@ -72,26 +83,34 @@ fusion work added since:
 
 ## System Architecture
 
+The **final hardware architecture** and the **simulation architecture** converge on one
+`LiveState`:
+
 ```mermaid
 flowchart TD
-    SIM["Simulator (10 scenarios)"] -->|SensorFrame| SF
-    STM["STM32Source\n(hardware framework, not yet real data)"] -->|SensorFrame| SF
-    SF["SensorFrame"] --> LRP["LiDAR / Radar Processing\n(preprocessing → coordinates)"]
-    LRP --> FUSION["Sensor Fusion\n(FusionEngine)"]
-    RADAR["RadarReading\n(synthetic / test data only)"] -.-> FUSION
-    FUSION --> DET["Object Detection\n(DBSCAN clustering)"]
-    DET --> CLASS["Classification\n(geometric shape rules)"]
-    CLASS --> TRACK["Tracking\n(nearest-neighbor + Kalman)"]
-    TRACK --> TTC["TTC"]
-    TTC --> CLR["Clearance"]
-    CLR --> RISK["Risk"]
-    RISK --> LIVE["LiveState"]
-    LIVE --> DASH["Dashboard"]
+    subgraph HW["HARDWARE MODE (framework — no physical device yet)"]
+        A3M1["A3M1 LiDAR"] -->|UART| STM32
+        R121["R121 Radar"] -->|CAN| STM32
+        STM32["STM32F103C8T6\nperception + fusion (on-device)"] -->|CAN| ECU["Vehicle ECU"]
+        STM32 -->|processed frame| ESP32["ESP32"]
+        ESP32 -->|Wi-Fi| ES["ESP32Source\n(Edge PC)"]
+        ES -->|STM32ProcessedFrame| ADPT["ProcessedFrameToLiveState\n(no perception re-run)"]
+        ADPT --> LIVE
+    end
+    subgraph SIMU["SIMULATION MODE (default)"]
+        SIM["Simulator (10 scenarios)"] -->|SensorFrame| PIPE["Perception pipeline\npreprocess→cluster→classify→track→fuse→TTC→clearance→risk"]
+        PIPE --> LIVE
+    end
+    LIVE["LiveState (single source of truth)"] --> DASH["Dashboard"]
     LIVE --> UNITY["Unity"]
     LIVE --> PG["PostgreSQL"]
 ```
 
-This is the conceptual data flow. The exact stage order implemented in
+`STM32Source` (raw-serial adapter, runs the Edge pipeline) remains in the codebase and tested,
+but the target hardware path is `ESP32Source` (processed frames, no Edge perception). See
+[Two Modes](#two-modes-simulation-and-hardware).
+
+The exact stage order (simulation) implemented in
 `scripts/serve_unity_bridge.py` is: preprocessing → coordinate transform → clustering
 (detection) → classification → tracking → **fusion** → collision/TTC + clearance → risk →
 `LiveState`. `FusionEngine` runs on the already-tracked LiDAR objects (enriching them with any
@@ -107,17 +126,39 @@ the identical `LiveState`/`PERCEPTION_FRAME` stream over their own independent c
 independently recomputes detection, classification, tracking, TTC, clearance, or risk. See
 [docs/communication.md](docs/communication.md) and [docs/architecture.md](docs/architecture.md).
 
+## Two Modes: Simulation and Hardware
+
+`Settings.data_source` (`LIDAR_DATA_SOURCE`) selects the mode. Both converge on one `LiveState`;
+the Dashboard, Unity, and PostgreSQL are identical in both.
+
+| | **Simulation** (`data_source=simulation`, default) | **Hardware** (`data_source=hardware`) |
+|---|---|---|
+| Source | `simulator.SimulatorSource` (10 scenarios) | `datasources.esp32.ESP32Source` — receives `STM32ProcessedFrame`s over a replaceable `ESP32Transport` |
+| Perception | runs on the Edge (`serve_unity_bridge.py`: preprocess→…→risk) | runs **on the STM32**; the Edge only re-shapes the processed frame into `LiveState` (`ProcessedFrameToLiveState`), never re-detects/tracks/scores |
+| Transport | in-process | `LIDAR_ESP32_TRANSPORT`: unset → `connect()` fails loudly (**never** falls back to simulation); `mock` → scripted SIMULATED ESP32 transport; a real name needs a `ProcessedFrameDeserializer`/`ESP32Transport` subclass |
+| No data | n/a | Edge → `STALE` / `RECONNECTING`; wire `HARDWARE_DATA_UNAVAILABLE`; Dashboard banner; **no synthetic fallback** |
+| CAN → ECU | n/a | `can_output` software model (opt-in, `LIDAR_CAN_OUTPUT_ENABLED=true`), independent of the ESP32 path |
+
+The **10 simulation scenarios are permanent** and are the software regression suite. See
+`docs/esp32-integration.md`, `docs/can-output.md`, `docs/stm32-processed-contract.md`.
+
 ## Hardware
 
 | Component | Model | Interface | Status in this repository |
 |---|---|---|---|
-| LiDAR | SLAMTEC RPLIDAR A3M1 | UART → STM32 | Named in the target architecture; no physical unit connected |
-| Radar | R121 Radar Module | CAN → STM32 | Named in the target architecture; no physical unit connected; CAN protocol not yet specified |
-| ECU | STM32F103C8T6 | UART in (LiDAR), CAN in (Radar), STM32→Edge link out | `datasources.STM32Source` framework implemented; real wire protocol not yet defined |
-| Edge computer | Any machine running `perception/` | USB/serial from STM32, when connected | `STM32Source` ready to configure once a real protocol exists |
+| LiDAR | SLAMTEC RPLIDAR A3M1 | UART → STM32 | Named in the target architecture; **no physical unit connected; UART/framing/scaling spec not supplied** |
+| Radar | R121 Radar Module | CAN → STM32 | Named in the target architecture; **no physical unit connected; CAN IDs / DLC / layout not supplied** |
+| MCU | STM32F103C8T6 | UART in (A3M1), CAN in (R121), CAN out (ECU), processed-frame out (ESP32) | **Primary perception node in hardware mode.** No firmware in this repo (`embedded/stm32/` is a README). Edge-side seams complete (`datasources.stm32`, `models.stm32_processed`, `can_output`) |
+| Gateway | ESP32 | STM32 ↔ Wi-Fi | Treated as a transparent gateway. `ESP32Source` + replaceable `ESP32Transport` implemented; **real Wi-Fi transport/host/port/encoding not supplied** |
+| ECU | Vehicle ECU | CAN from STM32 | `can_output` software model (configurable message/signal specs, DBC-style bit-packer, mock transports); **no bitrate / CAN IDs / DLC / DBC supplied, no bus** |
+| Edge computer | Any machine running `perception/` + `cloud/` | Wi-Fi from ESP32 | Ready to configure once the specs exist |
 
-See [Hardware Integration](#hardware-integration) for exactly what is and is not implemented, and
-[docs/hardware-integration.md](docs/hardware-integration.md) for the full parameter checklist.
+See [Two Modes](#two-modes-simulation-and-hardware), `docs/hardware-integration.md`,
+`docs/esp32-integration.md`, `docs/can-output.md`, `docs/stm32-processed-contract.md`, and the
+step-by-step `docs/hardware-validation-procedure.md`. The complete Edge software path can be run
+today with **no devices** via the scripted MOCK STM32 HARDWARE OUTPUT
+(`LIDAR_ESP32_TRANSPORT=mock`, `LIDAR_ESP32_MOCK_SCENARIO=realtime_arc|multi_object|tracking`) —
+see `docs/mock-stm32-hardware-output.md`.
 
 ## Software Stack
 
@@ -125,7 +166,10 @@ See [Hardware Integration](#hardware-integration) for exactly what is and is not
 |---|---|
 | Perception engine | Python 3.10+, NumPy, scikit-learn (DBSCAN), Pydantic / pydantic-settings |
 | Simulator | Python, ray-casting 2D LiDAR model, configurable scenario JSON |
-| Hardware transport | `pyserial` (`datasources.stm32.transport.SerialTransport`) |
+| STM32 raw-serial transport | `pyserial` (`datasources.stm32.transport.SerialTransport`) |
+| STM32 processed-frame contract | `models.stm32_processed.STM32ProcessedFrame` (versioned, validated) + `datasources.stm32.processed` (deserializer interface + JSON reference codec) |
+| ESP32 gateway | `datasources.esp32` — `ESP32Source`, replaceable `ESP32Transport` (mock / scripted), `ProcessedFrameToLiveState` adapter |
+| STM32 → ECU CAN output | `can_output` — configurable `CANMessageSpec`/`CANSignalSpec`, `SignalPacker` (DBC-style), `MockCANTransport` / `LoggingCANTransport` |
 | Streaming (Edge → consumers) | Raw TCP (legacy `<START>`/`<END>` protocol), structured JSON TCP, over `perception/src/streaming/` |
 | Backend | FastAPI, Uvicorn, SQLAlchemy, native WebSockets |
 | Database | PostgreSQL, with automatic local SQLite fallback if unreachable |
@@ -159,8 +203,11 @@ bridge does not relay through the backend, and the backend does not relay throug
 
 ## Edge Computing Pipeline
 
-`scripts/serve_unity_bridge.py` owns the whole pipeline for one run: it selects a `SensorSource`
-(`scripts/sensor_source.py`, per `DATA_SOURCE`), then for every scan runs, in order:
+`scripts/serve_unity_bridge.py` dispatches on `Settings.data_source`. In **hardware mode** it runs
+`datasources.esp32.edge_runner.run_esp32_edge` — `ESP32Source.poll()` → `ProcessedFrameToLiveState`
+(reshape only) → publish; **no pipeline stages below run** (the STM32 already did the perception).
+In **simulation mode** it selects a `SensorSource` (`scripts/sensor_source.py`) and, for every
+scan, runs in order:
 
 1. `preprocessing.Preprocessor` — validation, range filtering, outlier/noise filtering
 2. `coordinates.CoordinateTransformer` — polar → Cartesian
@@ -191,9 +238,13 @@ class LiDARDataSource(ABC):   # == SensorSource
     def is_connected(self) -> bool: ...
 ```
 
-`scripts/sensor_source.py::get_sensor_source()` is the one composition-root factory that picks
-`SimulatorSource` (`data_source="simulation"`) or `STM32Source` (`data_source="hardware"`) — see
-[docs/architecture.md](docs/architecture.md) "Sensor source abstraction".
+`scripts/sensor_source.py::get_sensor_source()` picks `SimulatorSource` for
+`data_source="simulation"`. For `data_source="hardware"` the bridge instead uses
+`datasources.esp32.ESP32Source`, which does **not** produce a raw `ScanFrame` — it delivers an
+already-processed `models.stm32_processed.STM32ProcessedFrame` (see
+[docs/stm32-processed-contract.md](docs/stm32-processed-contract.md) and
+[docs/esp32-integration.md](docs/esp32-integration.md)). The legacy `STM32Source` (raw serial,
+runs the Edge pipeline) remains selectable/tested but is not the target hardware path.
 
 ## LiDAR Processing
 
@@ -327,24 +378,27 @@ LiDAR-Vision360/
 │   │   ├── mapping/            2D occupancy grid mapping
 │   │   ├── collision/          Collision-risk engine (TTC, prediction, risk)
 │   │   ├── clearance/          Directional clearance engine
-│   │   ├── fusion/             Sensor fusion (FusionEngine, association, validation)
+│   │   ├── fusion/             Sensor fusion (FusionEngine, association, validation) — simulation mode
+│   │   ├── models/stm32_processed.py   STM32ProcessedFrame contract (Phase 2)
+│   │   ├── can_output/         STM32→ECU CAN-output software model (specs, encoder, transports, controller)
 │   │   ├── datasources/        SensorSource abstraction, SimulatedLiDARDataSource,
-│   │   │   └── stm32/          STM32Source + hardware framework (transport, connection
-│   │   │                       manager, framing, CRC, sequence validation, health, parsers)
-│   │   ├── pipeline/           LiveState assembly
+│   │   │   ├── stm32/          legacy raw-serial STM32Source (transport, framing, CRC, sequence, health, parsers)
+│   │   │   │   └── processed/  STM32ProcessedFrame version gate + validation + serializer interface
+│   │   │   └── esp32/          ESP32Source, replaceable ESP32Transport, ProcessedFrameToLiveState, edge_runner
+│   │   ├── pipeline/           LiveState assembly (LiveStateBuilder)
 │   │   ├── serialization/      Unity/dashboard wire-format message builders
 │   │   └── streaming/          TCP servers (raw + structured JSON), bounded outgoing queues
-│   └── tests/                  863 tests (pytest)
+│   └── tests/                  ~1056 tests (pytest)
 ├── simulator/                  Configurable 2D 360° LiDAR simulator
 │   ├── scenarios/               10 predefined scenario JSON files
 │   ├── src/simulator/          Ray-casting model, obstacles, noise, CLI, recording/replay
-│   └── tests/                  228 tests
+│   └── tests/                  ~243 tests
 ├── cloud/
 │   ├── backend/                 FastAPI backend (REST + WebSocket + PostgreSQL/SQLite)
 │   │   └── src/backend/routes/ core.py, debug.py, events.py, frames.py, metrics.py
-│   └── dashboard/               React + TypeScript + Vite dashboard
+│   └── dashboard/               React + TypeScript + Vite dashboard (~53 Vitest)
 ├── unity/LiDARVision360/        Unity digital twin project
-├── embedded/stm32/              STM32 firmware placeholder (not implemented; awaiting protocol spec)
+├── embedded/stm32/              STM32 firmware (README only — not in this repo; awaiting spec)
 ├── docker/                      Containerization (README only; no Dockerfile yet)
 ├── docs/                        Per-subsystem architecture/design docs
 ├── scripts/                     Setup, demo launch/stop, benchmarks, visualizers, verification
@@ -446,17 +500,21 @@ uvicorn backend.main:app --app-dir cloud/backend/src --host 0.0.0.0 --port 8000
 cd cloud/dashboard; npm run dev
 ```
 
-**Hardware mode** — currently supported only as a launch mode, not a validated data path (see
-[Hardware Integration](#hardware-integration)):
+**Mock-hardware mode** — the full hardware code path (`ESP32Source` → `STM32ProcessedFrame` →
+`LiveState`) driven by a scripted SIMULATED ESP32 transport. No physical device; clearly labelled
+in the logs. Optionally also runs the STM32→ECU CAN-output software model.
 
 ```powershell
-$env:LIDAR_DATA_SOURCE = "hardware"
-python scripts/serve_unity_bridge.py
+$env:LIDAR_DATA_SOURCE = "hardware"; $env:LIDAR_ESP32_TRANSPORT = "mock"
+# optional: $env:LIDAR_CAN_OUTPUT_ENABLED = "true"
+python scripts/serve_unity_bridge.py --rate 10
 ```
 
-This will fail fast with `STM32ConfigurationError: STM32 protocol configuration incomplete: ...`
-until the hardware protocol fields in `.env` are filled in from a real specification — by design,
-it never silently substitutes simulated data.
+**Real hardware mode** — same command with `LIDAR_ESP32_TRANSPORT` set to a real transport name
+and `LIDAR_ESP32_HOST` / `LIDAR_ESP32_PORT` from the hardware spec (plus the `.env` fields listed
+in `docs/hardware-validation-procedure.md`). With `LIDAR_ESP32_TRANSPORT` unset it exits **2**
+with *"NEVER falls back to simulation data"* — by design, it never silently substitutes simulated
+data. See [Hardware Integration](#hardware-integration) and `docs/final-demonstration.md`.
 
 ## Running Individual Scenarios
 
@@ -487,7 +545,7 @@ Served by `cloud/backend`, at both a bare path and an `/api/`-prefixed path (e.g
 | `GET /health` | Backend liveness/uptime. |
 | `GET /status` | Connection state to the perception bridge, session info, measured scan rate. |
 | `GET /debug/live-frame` | The current live perception frame (objects, tracks, risk, clearance) — `null` if not connected. |
-| `GET /debug/stream-status` | Denser single-call summary: connected, frame age, risk, object/track counts, latency. |
+| `GET /debug/stream-status` | Denser single-call summary: connected, frame age, risk, object/track counts, latency, measured scan rate, and `last_error_code`/`last_error_message` (e.g. `HARDWARE_DATA_UNAVAILABLE` + reason, cleared on the next real frame). |
 | `GET /latest`, `/objects`, `/tracks`, `/tracks/{track_id}` | Current-scan snapshots. |
 | `GET /events`, `/collision-events`, `/clearance-events`, `/ttc-events`, `/sensor-events` | DB-persisted event history, session-scoped by default. |
 | `GET /sessions`, `/sessions/{id}` | Session records. |
@@ -497,98 +555,148 @@ Served by `cloud/backend`, at both a bare path and an `/api/`-prefixed path (e.g
 ## Testing
 
 ```bash
-pytest perception/tests -q
+pytest perception/tests -q      # run separately -- perception/ and simulator/ both define a `tests` package
 pytest simulator/tests -q
-pytest cloud/backend/tests -q
+pytest cloud/backend/tests/test_state.py cloud/backend/tests/test_ingestion.py -q
 ```
 ```bash
 cd cloud/dashboard
-npm test
+npx tsc --noEmit && npm test
 ```
 
-Verified results (this repository, run against simulation/synthetic data only — **not** hardware
-validation):
+**Verified results — run against simulation, mock-transport, and synthetic data only; NOT
+hardware validation.** Results are kept in four never-combined categories:
 
-| Suite | Result |
-|---|---|
-| `perception/tests` (863 tests total) | **863 passed** |
-| — of which, hardware-adapter framework tests (`test_stm32_*.py`, synthetic byte packets/fake transports) | **90 passed** |
-| — of which, sensor-fusion tests (`test_fusion_*.py`, synthetic `RadarReading` objects) | **39 passed** |
-| `simulator/tests` (228 tests) | **228 passed** |
-| `cloud/dashboard` (Vitest) | **34 passed** |
-| `cloud/backend/tests` (80 tests total) | `test_ingestion.py` (12) and `test_state.py` (28) pass; `test_api.py` (40) currently hangs when run under `pytest` in this environment — a known, separately-tracked issue unrelated to hardware/fusion work |
+| Category | Suite | Result |
+|---|---|---|
+| **SOFTWARE UNIT** | `perception/tests` | **1056 passed** (incl. `test_stm32_processed_contract` 61, `test_esp32_*` 70, `test_can_output_*` 73, fusion 39) |
+| **SOFTWARE UNIT** | `simulator/tests` | **243 passed**, 1 pre-existing flaky (`TestPole::test_pole_classifies_as_pole_like` — noise-driven, ~11/12 on a clean checkout) |
+| **SOFTWARE UNIT** | `cloud/backend` (`test_state.py` + `test_ingestion.py`) | **41 passed** (`test_api.py` = pre-existing hang, not run) |
+| **SOFTWARE UNIT** | `cloud/dashboard` (`tsc` + Vitest) | **exit 0**, **53 passed** |
+| **SIMULATION** | all 10 scenarios, backend + bridge, live `/debug/*` sampling | **10/10 verified** (see [Current Status](#current-status)) |
+| **MOCK HARDWARE** | `DATA_SOURCE=hardware` + `ESP32_TRANSPORT=mock`, backend + bridge + WebSocket + DB + failure injection | **pass** |
+| **PHYSICAL HARDWARE** | — | **NOT PERFORMED — no device / no spec** |
 
 ## Hardware Integration
 
-**Implemented (software/hardware framework):**
+**Implemented (software seams, all mock/unit-tested — no physical device):**
 
-- `datasources.STM32Source` — the `SensorSource` selected by `DATA_SOURCE=hardware`
-- `datasources.stm32.transport.SerialTransport` — real serial I/O via `pyserial`
-- `datasources.stm32.connection_manager.STM32ConnectionManager` — connect/reconnect with
-  exponential backoff
-- `datasources.stm32.framing.FrameCodec` — configurable delimited or fixed-length framing
-- `datasources.stm32.crc` — selectable checksum algorithms (`none`, `xor8`, `sum8`, `crc8`,
-  `crc16_ccitt`)
-- `datasources.stm32.sequence.SequenceValidator` — dropped-frame / duplicate detection, optional
-  wraparound handling
-- `datasources.stm32.health.HealthMonitor` — per-channel (LiDAR/radar) connection/health tracking
-- `datasources.stm32.parsers` — `LiDARMessageParser`/`RadarMessageParser` interfaces; the shipped
-  default implementations always raise `STM32ConfigurationError` rather than guess a payload
-  layout
-- `fusion.FusionEngine` — consumes `STM32Source.latest_radar_reading` when present
+- `datasources.stm32.processed` — the protocol-independent `STM32ProcessedFrame` contract
+  (Phase 2): versioned (`SUPPORTED_MAJOR_VERSIONS`), semantically validated
+  (`validate_processed_frame`), with a replaceable `ProcessedFrameDeserializer` interface and a
+  JSON reference codec.
+- `datasources.esp32` — `ESP32Source` (connection mgmt, timeout, reconnect-with-backoff,
+  heartbeat, stale-frame detection, sequence-gap / dropped-frame tracking, malformed rejection,
+  **no synthetic fallback**), a replaceable `ESP32Transport` (mock / scripted), and
+  `ProcessedFrameToLiveState` (reshapes a processed frame into `LiveState` — reusing
+  `LiveStateBuilder`, running **no** perception).
+- `can_output` — configurable `CANMessageSpec` / `CANSignalSpec` / `CANOutputConfig`, a
+  standard DBC-style `SignalPacker`, per-signal validation, transmission control (periodic +
+  event, rate-capped, sequenced), bus-off / tx-failure / queue-overflow handling + recovery +
+  `CANOutputHealth`, and `MockCANTransport` / `LoggingCANTransport`. Independent of `datasources.esp32`.
+- `datasources.stm32` (legacy raw-serial path) — `STM32Source`, `SerialTransport`,
+  `STM32ConnectionManager`, `FrameCodec`, `crc` (`none`/`xor8`/`sum8`/`crc8`/`crc16_ccitt`),
+  `SequenceValidator`, `HealthMonitor`, `LiDARMessageParser`/`RadarMessageParser` (shipped
+  defaults always raise rather than guess). Retained and tested; not the target hardware path.
 
-**Pending real hardware validation** (see [docs/hardware-integration.md](docs/hardware-integration.md)
-for the full checklist):
+**Pending real hardware validation** (full per-field list + config mapping in
+[docs/hardware-validation-procedure.md](docs/hardware-validation-procedure.md); see also
+[docs/hardware-integration.md](docs/hardware-integration.md),
+[docs/esp32-integration.md](docs/esp32-integration.md), [docs/can-output.md](docs/can-output.md)):
 
-- Actual A3M1 → STM32 UART data
-- Actual R121 → STM32 CAN data
-- Actual STM32 → Edge communication (transport, framing, CRC, message layout, scaling, timestamp
-  format are all still unset placeholders — `.env.example`)
-- Any real physical sensor measurement flowing through this system
-- Real-world LiDAR/Radar fusion
-- Hardware-in-the-loop validation of any kind
+- Physical A3M1 + R121 + STM32 (with firmware) + ESP32 + Vehicle ECU, wired and networked.
+- A3M1→STM32 UART: baud, framing, byte order, message-type/sequence/CRC fields, payload
+  offsets/widths/scaling, quality field, timestamp format — plus a real `LiDARMessageParser`.
+- R121→STM32 CAN: CAN ID(s), DLC, byte layout, scaling — plus a real `RadarMessageParser`.
+- STM32↔ESP32↔Edge: transport, host/port, framing, encoding, CRC, auth — plus (if non-JSON) a
+  real `ProcessedFrameDeserializer` and an `ESP32Transport` subclass.
+- STM32→ECU CAN: bitrate, interface, per-message CAN ID/DLC/period, per-signal
+  layout/scaling/sign, checksum — plus a real `CANTransport` (`python-can` is not a dependency).
 
-No COM port, baud rate, CAN ID, CAN bitrate, packet format, CRC parameter, or sensor measurement
-in this repository is invented — every hardware-specific value is either a documented placeholder
-or absent pending the real specification.
+**No baud rate, CAN ID, CAN bitrate, DLC, byte layout, scaling factor, CRC parameter, ESP32
+IP/port, or sensor measurement in this repository is invented** — every hardware-specific value
+is a documented placeholder (`None`) reported by `pending_hardware_parameters()` / the
+`STM32ConfigurationError` / `ESP32ConfigurationError` gates, or absent pending the real spec.
 
 ## Current Status
 
-Software perception and simulation validation are implemented: the full pipeline (preprocessing
-through risk assessment), sensor-fusion architecture, Dashboard, Unity, and PostgreSQL persistence
-all work end-to-end against the 10 simulation scenarios and synthetic radar data, with 863 + 228 +
-34 automated tests passing (see [Testing](#testing)). The hardware integration layer
-(`STM32Source` and its supporting framework) is implemented and unit-tested against synthetic byte
-packets, and is prepared to accept real STM32-based sensor input. **Physical A3M1/R121 validation
-remains pending final hardware communication specifications and connection to the physical sensor
-setup** — nothing in this repository has processed a real hardware measurement.
+**Software & simulation: complete and verified.** The full perception pipeline, the STM32
+processed-perception contract, `ESP32Source`, the CAN-output model, Dashboard, Unity, and
+PostgreSQL persistence all work end-to-end. ~1393 software unit tests pass (see
+[Testing](#testing)).
 
-One known, pre-existing, unrelated issue: `cloud/backend/tests/test_api.py` hangs under `pytest`
-in this environment (see [Testing](#testing)) — flagged separately, not blocking simulation-mode
-operation (`run_demo.ps1`'s own end-to-end verification against the live backend passes).
+**Simulation end-to-end (measured, live backend + bridge, all 10 scenarios):** correct
+object/track counts (`01_empty` → 0/0/SAFE; `05_multiple_obstacles` → 5 objects, 5 distinct track
+IDs, CRITICAL; `04_vehicle_ahead` → vehicle_like, LOW_CLEARANCE 0.48 m), real velocities
+(`07_moving_crossing` ≈ 1.5 m/s), TTC finite where closing and absent otherwise
+(`08_approaching_obstacle` TTC 1.38 → 0.38 → 0.0 s while distance shrinks and risk escalates to
+CRITICAL), directional clearance from the clearance engine, **~9.96 Hz (target 10), 0 dropped
+frames**, wire latency ≈ 3.7 ms mean, sensor-ingestion latency ≈ 64 ms mean.
+`GET /debug/live-frame` matches `GET /debug/stream-status`.
+
+**Mock hardware end-to-end (SIMULATED ESP32 transport):** `source_id = stm32_hardware`,
+`config.data_source = hardware`, monotonic sequence, `sensor_source = lidar+radar`, risk
+`SAFE → WARNING → CRITICAL` and TTC `6.1 → 0.25 s` as the scripted vehicle approaches, ~9.9 Hz,
+0 dropped, ingestion latency ≈ 8 ms mean. On link loss: Edge → `STALE`/`RECONNECTING`,
+`/debug/live-frame` → `null` (**not** a stale frame), `HARDWARE_DATA_UNAVAILABLE` on the wire,
+**no simulation fallback**. `DATA_SOURCE=hardware` with no transport → **exit 2**.
+
+**PostgreSQL:** a mock-hardware session persists a `sessions` row (`source_id=stm32_hardware`,
+`edge_session_id`, `frame_count`, `status=ended`), one `tracks` row per `track_id` (verified: 1
+row / 1 distinct id, `sensor_source=lidar+radar`), and one event row per risk/clearance
+transition. Hardware and simulation rows are distinguishable by `source_id`; `/api/sessions` /
+`/api/collision-events` retrieve history.
+
+**PHYSICAL HARDWARE VALIDATION NOT PERFORMED.** No physical A3M1/R121/STM32/ESP32 is connected,
+no STM32 firmware exists in the repo, and no hardware/DBC specification has been supplied — so
+`DATA_SOURCE=hardware` cannot run against real hardware. Nothing in this repository has processed
+a real hardware measurement.
+
+Pre-existing, unrelated: `cloud/backend/tests/test_api.py` hangs under `pytest` in this
+environment (not run); `simulator/tests` `TestPole::test_pole_classifies_as_pole_like` is
+noise-driven flaky (~1/12).
 
 ## Limitations
 
+- **No physical hardware has been connected or validated.** `ESP32Source` / `STM32Source` /
+  `can_output` cannot run against real hardware without their specifications — by design, not a bug.
 - 2D LiDAR only — no true 3D reconstruction; Unity's 3D view is a visualization of 2D-derived data.
-- Sensor fusion is architecture-and-interface complete but has never processed a real radar
-  reading — all fusion test coverage uses synthetic `RadarReading`/`RadarTarget` objects.
-- `STM32Source` cannot connect without a complete, real protocol specification — by design, not a
-  bug.
-- Radar-only fused objects (no LiDAR match) carry no shape/size information — radar alone cannot
-  provide it.
+- In simulation mode, sensor fusion has never processed a real radar reading (synthetic
+  `RadarReading` only); in hardware mode, fusion runs on the STM32 (also not physically validated).
+- Radar-only fused objects (no LiDAR match) carry no shape/size information.
+- Unity C# is written and reviewed but not compiled/run (no Editor in this environment).
 - No production deployment, authentication, or historical-analytics UI beyond the dashboard's own
   bounded event timeline.
-- `cloud/backend/tests/test_api.py` currently hangs in this environment (see
-  [Current Status](#current-status)).
+- `cloud/backend/tests/test_api.py` hangs under `pytest`; `simulator` `TestPole` is flaky (~1/12).
 
 ## Future Work
 
-- Obtain and implement the real R121 CAN protocol and STM32→Edge wire protocol (see
-  [docs/hardware-integration.md](docs/hardware-integration.md)'s checklist).
-- Perform actual hardware-in-the-loop validation once physical sensors are connected.
-- Tune fusion association/gating thresholds against real R121 accuracy characteristics.
-- Historical analytics beyond the current bounded event log; configurable alerting.
+- Obtain the A3M1 UART, R121 CAN, STM32↔ESP32, and STM32→ECU CAN specifications; fill them into
+  `.env` / a `CANOutputConfig` and implement the concrete `LiDARMessageParser` /
+  `RadarMessageParser` / `ESP32Transport` / `ProcessedFrameDeserializer` / `CANTransport`
+  subclasses. Then run `docs/hardware-validation-procedure.md` TEST 1 → TEST 9.
+- Perform hardware-in-the-loop validation and the controlled physical + failure tests.
+- Historical analytics beyond the bounded event log; configurable alerting.
 - Production cloud deployment and authentication.
+
+## Documentation
+
+| Doc | Covers |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Overall architecture, sensor-source abstraction, session/sequence management |
+| [docs/communication.md](docs/communication.md) | Edge↔Unity/Dashboard streaming protocol (versioned JSON envelope, framing, reliability) |
+| [docs/stm32-processed-contract.md](docs/stm32-processed-contract.md) | `STM32ProcessedFrame` schema, validation, versioning, → `LiveState` mapping (Phase 2) |
+| [docs/esp32-integration.md](docs/esp32-integration.md) | `ESP32Source`, transport abstraction, connection/stale/reconnect handling, config (Phase 3) |
+| [docs/mock-stm32-hardware-output.md](docs/mock-stm32-hardware-output.md) | Scripted MOCK STM32 HARDWARE OUTPUT generator + scenes (`realtime_arc` / `multi_object` / `tracking`) — software-only hardware-readiness (Phase 10) |
+| [docs/can-output.md](docs/can-output.md) | STM32→ECU CAN-output model: message/signal specs, bit-packer, transmission control, health (Phase 5) |
+| [docs/hardware-integration.md](docs/hardware-integration.md) | The raw-serial STM32 framework + the per-field checklist of what the hardware team must supply |
+| [docs/hardware-validation-procedure.md](docs/hardware-validation-procedure.md) | Stage-by-stage physical bring-up runbook (TEST 1 → TEST 9) + per-signal spec prerequisites (Phase 6) |
+| [docs/hardware-setup-guide.md](docs/hardware-setup-guide.md) | Wiring & power reference (topology, per-link connectors, `⟨PENDING SPEC⟩` placeholders, `.env` keys, electrical bring-up order) |
+| [docs/final-demonstration.md](docs/final-demonstration.md) | The 16-step end-to-end demonstration procedure (Phase 8) |
+| [docs/final-demonstration-package.md](docs/final-demonstration-package.md) | Final physical-demo package: hardware checklist, pre-demo checklist, 12-step + 5-condition procedure, Dashboard/Unity/DB/performance evidence templates, failure matrix, FINAL EVIDENCE TABLE, FINAL DEMO STATUS (Phase 9) |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Consolidated software + hardware troubleshooting, ordered by pipeline stage; escalation checklist |
+| [docs/perception.md](docs/perception.md), [docs/preprocessing.md](docs/preprocessing.md), [docs/clustering.md](docs/clustering.md), [docs/object-classification.md](docs/object-classification.md), [docs/tracking.md](docs/tracking.md), [docs/mapping.md](docs/mapping.md), [docs/collision.md](docs/collision.md), [docs/fusion.md](docs/fusion.md) | Per-stage perception design |
+| [docs/cloud.md](docs/cloud.md), [docs/unity.md](docs/unity.md), [docs/data-model.md](docs/data-model.md), [docs/coordinates.md](docs/coordinates.md), [docs/simulation.md](docs/simulation.md), [docs/testing.md](docs/testing.md) | Backend/dashboard, Unity, data model, conventions, testing |
 
 ## Contributors
 

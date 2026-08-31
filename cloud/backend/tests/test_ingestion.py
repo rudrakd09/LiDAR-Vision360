@@ -287,6 +287,54 @@ class TestNewPersistedRecordTypes:
         ingestor.stop()
         server_thread.join(timeout=3)
 
+    def test_track_persisted_when_track_created_event_was_missed(self, db, event_loop_for_ingestor):
+        """Cold-start gap fix: a track present in `tracked_objects` with NO track_created event
+        (backend connected mid-session) is still persisted -- once, not per frame."""
+        from backend.models_db import TrackRecord
+
+        port_holder, ready = [], threading.Event()
+
+        def _server(port_holder, ready_event):
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", 0))
+            port_holder.append(srv.getsockname()[1])
+            srv.listen(1)
+            ready_event.set()
+            conn, _ = srv.accept()
+            # NO track_created event on any frame -- t9 just appears already-tracked
+            for fid in (1, 2, 3):
+                fm = _frame_message(fid, events=[])
+                fm["data"]["tracked_objects"] = [_tracked_object("t9", frames_tracked=fid + 5)]
+                conn.sendall(_encode(fm))
+                time.sleep(0.03)
+            time.sleep(0.3)
+            conn.close()
+            srv.close()
+
+        server_thread = threading.Thread(target=_server, args=(port_holder, ready), daemon=True)
+        server_thread.start()
+        ready.wait(timeout=3)
+
+        settings = Settings(_env_file=None, streaming_host="127.0.0.1", streaming_json_port=port_holder[0], streaming_reconnect_interval_s=0.2)
+        state = LatestState(ring_buffer_size=50, track_grace_period_s=2.0)
+        ingestor = PerceptionIngestor(settings, state, db, LiveBroadcastHub(), event_loop_for_ingestor)
+        ingestor.start()
+
+        deadline = time.time() + 5
+        while time.time() < deadline and state.connection.frames_received < 3:
+            time.sleep(0.05)
+        time.sleep(0.2)
+
+        with db.session() as session:
+            records = session.execute(select(TrackRecord).where(TrackRecord.track_id == "t9")).scalars().all()
+        assert len(records) == 1, "cold-start track persisted exactly once (not per frame)"
+        assert records[0].classification == "vehicle_like"
+        assert records[0].source_id == "test"
+
+        ingestor.stop()
+        server_thread.join(timeout=3)
+
     def test_ttc_event_persists_with_real_ttc_value(self, db, event_loop_for_ingestor):
         from backend.models_db import TTCEvent
 

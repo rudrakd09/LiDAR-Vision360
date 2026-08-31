@@ -39,8 +39,8 @@ describe("App renders real live data, not stale/hard-coded values", () => {
     expect(within(safetyPanel).getByText("N/A")).toBeInTheDocument(); // Min TTC tile
     // Both the Detected Objects table AND the Tracking panel legitimately show this same
     // empty-state message before any frame has arrived -- assert both, not just "at least one".
-    expect(within(screen.getByTestId("tracked-objects-table")).getByText("No objects currently tracked")).toBeInTheDocument();
-    expect(within(screen.getByTestId("tracking-history-panel")).getByText("No objects currently tracked")).toBeInTheDocument();
+    expect(within(screen.getByTestId("tracked-objects-table")).getByText("NO ACTIVE OBJECTS")).toBeInTheDocument();
+    expect(within(screen.getByTestId("tracking-history-panel")).getByText("NO ACTIVE OBJECTS")).toBeInTheDocument();
   });
 
   it("shows CRITICAL risk once a real critical-risk frame arrives over the socket", async () => {
@@ -76,7 +76,7 @@ describe("App renders real live data, not stale/hard-coded values", () => {
 
     const objectsTable = screen.getByTestId("tracked-objects-table");
     await waitFor(() => expect(within(objectsTable).getByText("#track-1")).toBeInTheDocument());
-    expect(within(objectsTable).queryByText("No objects currently tracked")).not.toBeInTheDocument();
+    expect(within(objectsTable).queryByText("NO ACTIVE OBJECTS")).not.toBeInTheDocument();
     // OBJECTS section: from StatTiles, driven by tracked_objects.length -- must read 1, not 0.
     const objectsPanel = screen.getByTestId("objects-panel");
     const objectsTile = within(objectsPanel).getByText("Object Count").closest(".stat-tile");

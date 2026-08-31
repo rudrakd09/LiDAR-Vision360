@@ -172,6 +172,11 @@ class LiveStateBuilder:
                     last_seen=self.track_history.last_seen(obj.track_id),
                     frames_tracked=obj.track_hits,  # verbatim from the real tracker -- see TrackedObjectState docstring
                     trajectory=self.track_history.trajectory(obj.track_id),
+                    # Reflect the real per-object sensor attribution (DetectedObject.sensor_sources,
+                    # populated by fusion.FusionEngine or the ESP32 processed-frame adapter) rather
+                    # than a hard-coded "lidar": "lidar" for a LiDAR-only object, "radar" for a
+                    # radar-only one, "lidar+radar" for a fused one.
+                    sensor_source="+".join(obj.sensor_sources) if obj.sensor_sources else "lidar",
                     ttc=result.ttc if result is not None else None,
                     risk=result.risk_level if result is not None else None,
                     tracking_state=obj.tracking_state,
