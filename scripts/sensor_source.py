@@ -22,9 +22,9 @@ pure-hardware deployment is never required to have the `simulator` package insta
 from __future__ import annotations
 
 from common.config import Settings, get_settings
-from datasources import STM32Source, SensorSource
+from datasources import ESP32SerialSource, STM32Source, SensorSource
 
-_VALID_DATA_SOURCES = ("simulation", "hardware")
+_VALID_DATA_SOURCES = ("simulation", "hardware", "esp32_serial")
 
 
 def get_sensor_source(
@@ -37,12 +37,19 @@ def get_sensor_source(
 
     - `"simulation"` (default): `simulator.SimulatorSource(scenario, settings, real_time)` --
       `scenario` is required (there is no simulated data without a scenario to run).
+    - `"esp32_serial"`: `datasources.ESP32SerialSource(settings)` -- the REAL hardware link
+      (LiDAR -> STM32 -> ESP32 -> USB serial), delivering raw `A:<deg> , D:<mm>` measurements that
+      the Edge's own perception pipeline then processes in full. `scenario`/`real_time` are not
+      applicable and ignored: a real sensor has no scenario to select, and it is inherently
+      real-time.
     - `"hardware"`: `datasources.STM32Source(settings)` -- still a placeholder; connecting raises
       `NotImplementedError` until the STM32 UART protocol is defined (see that class's own
       docstring). `scenario`/`real_time` are not applicable and ignored.
 
     Raises `ValueError` for any other `settings.data_source` value -- never silently falls back
-    to one or the other.
+    to one or the other. In particular there is NO path by which a live mode falls back to
+    simulated data: `"simulation"` is the only branch that can construct a `SimulatorSource`, and
+    reaching it requires `data_source == "simulation"` explicitly.
     """
     settings = settings or get_settings()
 
@@ -55,6 +62,9 @@ def get_sensor_source(
         from simulator import SimulatorSource  # deferred -- see module docstring
 
         return SimulatorSource(scenario=scenario, settings=settings, real_time=real_time)
+
+    if settings.data_source == "esp32_serial":
+        return ESP32SerialSource(settings=settings)
 
     if settings.data_source == "hardware":
         return STM32Source(settings=settings)

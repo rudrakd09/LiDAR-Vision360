@@ -118,9 +118,19 @@ export interface OccupancyMapData {
   cells_base64: string;
 }
 
+/** One raw LiDAR return in `PerceptionFrameData.points`.
+ *
+ * The shape depends on the Edge's `streaming_point_mode` (see `streaming.protocol._apply_point_mode`):
+ * `"polar"` (the default) sends `angle`/`distance`; `"cartesian"` sends `x`/`y`; `"both"` sends
+ * all four. Every field is therefore optional here, and `EnvironmentMap` accepts whichever pair
+ * arrived rather than the dashboard forcing one mode on the Edge. `angle` is degrees CCW from
+ * the vehicle's forward axis and `distance` is metres -- the same convention as everywhere else
+ * in this project (docs/coordinates.md). */
 export interface RawPoint {
-  angle: number;
-  distance: number;
+  angle?: number;
+  distance?: number;
+  x?: number;
+  y?: number;
   valid: boolean;
 }
 

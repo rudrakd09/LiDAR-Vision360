@@ -1,9 +1,15 @@
 /**
- * Top-down live environment view: occupancy map (if present this frame), vehicle footprint +
- * safety envelope (from `frame.config` -- Python is the authority, nothing hard-coded here, same
- * rule `SafetyZoneRenderer.cs` follows on the Unity side), tracked objects (colored by
- * classification, track_id label, a line to `predicted_position` when available), and each
- * direction's nearest clearance point.
+ * Top-down live environment view: the raw LiDAR point cloud, occupancy map (if present this
+ * frame), collision warning/critical zones, vehicle footprint + safety envelope (from
+ * `frame.config` -- Python is the authority, nothing hard-coded here, same rule
+ * `SafetyZoneRenderer.cs` follows on the Unity side), tracked objects (colored by classification,
+ * outlined by Edge-assessed risk, labelled with track_id + type, with velocity and predicted-
+ * position vectors), and each direction's nearest clearance point.
+ *
+ * Every value drawn is read straight off the frame the Edge sent. The one client-side computation
+ * is polar -> Cartesian for the raw point cloud, and only when the Edge chose to send points in
+ * polar form (`streaming_point_mode`); that is a rendering-space transform of a value already
+ * measured, not perception. Nothing here detects, classifies, tracks, or scores anything.
  *
  * Coordinate convention matches the rest of this project (`docs/coordinates.md`): +x forward,
  * +y left, degrees CCW from +x. Drawn with the vehicle fixed at canvas center and its heading
@@ -12,7 +18,7 @@
  * instead of a 3D scene.
  */
 import { useEffect, useRef } from "react";
-import type { PerceptionFrameData, PerceptionObject } from "../types";
+import type { PerceptionFrameData, PerceptionObject, RawPoint } from "../types";
 
 const CLASS_COLOR: Record<string, string> = {
   wall: "#8b9bab",
@@ -22,6 +28,45 @@ const CLASS_COLOR: Record<string, string> = {
   large_obstacle: "#ff6b6b",
   unknown: "#5a6673",
 };
+
+/** Outline color per Edge-assessed risk level. `null` = the Edge reported no risk entry for that
+ * track this frame, which is drawn as no outline rather than as a fabricated "safe". */
+const RISK_COLOR: Record<string, string> = {
+  safe: "rgba(63,185,80,0.55)",
+  warning: "rgba(255,209,102,0.85)",
+  critical: "rgba(255,77,79,0.95)",
+};
+
+/** Human-readable classification labels. Purely presentational -- the wire values are unchanged. */
+const CLASS_LABEL: Record<string, string> = {
+  wall: "WALL",
+  vehicle_like: "VEHICLE",
+  pole_like: "POLE",
+  person_like: "PERSON",
+  large_obstacle: "OBSTACLE",
+  unknown: "UNKNOWN",
+};
+
+/** Seconds of travel drawn for a velocity vector -- a fixed visual scale for the object's own
+ * measured `velocity`, not a prediction the dashboard computes (the Edge's own short-term
+ * prediction arrives separately as `predicted_position` and is drawn as its own dashed line). */
+const VELOCITY_VECTOR_SECONDS = 1.0;
+
+/** Below this speed an object reads as stationary and its velocity arrow is omitted -- an arrow
+ * jittering around a parked object is noise, not information. */
+const MIN_DRAWN_SPEED_MPS = 0.05;
+
+/** Resolves a raw point to world (x, y) metres, whichever representation the Edge sent.
+ * Returns `null` for an invalid return or an entry carrying neither pair. */
+function pointToWorld(point: RawPoint): [number, number] | null {
+  if (point.valid === false) return null;
+  if (typeof point.x === "number" && typeof point.y === "number") return [point.x, point.y];
+  if (typeof point.angle === "number" && typeof point.distance === "number") {
+    const rad = (point.angle * Math.PI) / 180;
+    return [point.distance * Math.cos(rad), point.distance * Math.sin(rad)];
+  }
+  return null;
+}
 
 export function EnvironmentMap({ frame }: { frame: PerceptionFrameData | null }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -53,9 +98,13 @@ export function EnvironmentMap({ frame }: { frame: PerceptionFrameData | null })
 
     drawRangeRings(ctx, cx, cy, scale, rangeM);
     if (frame?.map) drawOccupancyMap(ctx, frame.map, toScreen, scale);
+    if (frame?.config) drawRiskZones(ctx, cx, cy, scale, frame.config);
+    // Point cloud under the vehicle/objects/clearance overlays so those stay readable on top of
+    // a dense scan.
+    if (frame?.points) drawPointCloud(ctx, frame.points, toScreen);
     if (frame?.config) drawVehicle(ctx, frame.config, toScreen);
     if (frame?.clearance) drawClearance(ctx, frame.clearance, toScreen);
-    if (frame?.objects) drawObjects(ctx, frame.objects, toScreen, scale);
+    if (frame?.objects) drawObjects(ctx, frame.objects, toScreen, scale, riskByTrackId(frame));
 
     if (!frame) {
       ctx.fillStyle = "#5a6673";
@@ -71,6 +120,64 @@ export function EnvironmentMap({ frame }: { frame: PerceptionFrameData | null })
       <canvas ref={canvasRef} />
     </div>
   );
+}
+
+/** Looks up each track's Edge-assessed risk level.
+ *
+ * This is a LOOKUP of a value the Edge already computed and already joined onto each track
+ * (`pipeline.LiveStateBuilder` joins collision results onto tracks by `track_id` before sending),
+ * not a client-side re-derivation -- the dashboard still computes no risk of its own. See
+ * docs/architecture.md "Dashboard and Unity as pure LiveState consumers".
+ */
+function riskByTrackId(frame: PerceptionFrameData): Map<string, string> {
+  const byTrack = new Map<string, string>();
+  for (const tracked of frame.tracked_objects ?? []) {
+    if (tracked.risk) byTrack.set(tracked.track_id, tracked.risk);
+  }
+  return byTrack;
+}
+
+function drawPointCloud(
+  ctx: CanvasRenderingContext2D,
+  points: RawPoint[],
+  toScreen: (x: number, y: number) => [number, number],
+) {
+  // One fillStyle for the whole cloud and 1px rects rather than per-point arc() calls: at several
+  // hundred points per frame and ~10 frames/sec this is the difference between a free render and
+  // a measurable one (requirement 17, "Do not let frontend rendering block...").
+  ctx.fillStyle = "rgba(139,155,171,0.75)";
+  for (const point of points) {
+    const world = pointToWorld(point);
+    if (!world) continue;
+    const [sx, sy] = toScreen(world[0], world[1]);
+    ctx.fillRect(sx - 1, sy - 1, 2, 2);
+  }
+}
+
+/** Collision warning/critical zones, drawn at the distances the Edge is actually using
+ * (`frame.config`, straight from `Settings.collision_*_distance_m`) -- never a hard-coded radius,
+ * so changing the threshold in config moves the ring on screen too. */
+function drawRiskZones(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  scale: number,
+  config: PerceptionFrameData["config"],
+) {
+  const zones: [number, string][] = [
+    [config.collision_warning_distance_m, "rgba(255,209,102,0.22)"],
+    [config.collision_critical_distance_m, "rgba(255,77,79,0.30)"],
+  ];
+  ctx.setLineDash([5, 4]);
+  ctx.lineWidth = 1;
+  for (const [radiusM, color] of zones) {
+    if (!Number.isFinite(radiusM) || radiusM <= 0) continue;
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radiusM * scale, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
 }
 
 function drawRangeRings(ctx: CanvasRenderingContext2D, cx: number, cy: number, scale: number, rangeM: number) {
@@ -186,12 +293,14 @@ function drawObjects(
   objects: PerceptionObject[],
   toScreen: (x: number, y: number) => [number, number],
   scale: number,
+  riskByTrack: Map<string, string>,
 ) {
   for (const obj of objects) {
     const [sx, sy] = toScreen(obj.centroid.x, obj.centroid.y);
     const color = CLASS_COLOR[obj.classification] ?? CLASS_COLOR.unknown;
     const radius = Math.max(4, Math.min(obj.width, obj.depth) * scale * 0.5);
 
+    // Edge's own short-term prediction (dashed) -- where IT thinks the object will be.
     if (obj.predicted_position) {
       const [px, py] = toScreen(obj.predicted_position.x, obj.predicted_position.y);
       ctx.strokeStyle = color;
@@ -204,14 +313,74 @@ function drawObjects(
       ctx.setLineDash([]);
     }
 
+    // Measured velocity vector (solid, with an arrowhead) -- the tracker's own vx/vy, drawn over a
+    // fixed 1 s visual horizon. Omitted for an object the tracker measured as effectively still.
+    if (obj.velocity) {
+      const speed = Math.hypot(obj.velocity.vx, obj.velocity.vy);
+      if (speed >= MIN_DRAWN_SPEED_MPS) {
+        drawArrow(
+          ctx, sx, sy,
+          ...toScreen(
+            obj.centroid.x + obj.velocity.vx * VELOCITY_VECTOR_SECONDS,
+            obj.centroid.y + obj.velocity.vy * VELOCITY_VECTOR_SECONDS,
+          ),
+          color,
+        );
+      }
+    }
+
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(sx, sy, radius, 0, Math.PI * 2);
     ctx.fill();
 
+    // Risk outline -- drawn only when the Edge actually assessed this track this frame.
+    const risk = riskByTrack.get(obj.track_id);
+    if (risk && RISK_COLOR[risk]) {
+      ctx.strokeStyle = RISK_COLOR[risk];
+      ctx.lineWidth = risk === "critical" ? 2.5 : 1.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, radius + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     ctx.fillStyle = "#e6edf3";
     ctx.font = "10px sans-serif";
     ctx.textAlign = "left";
-    ctx.fillText(`#${obj.track_id}`, sx + radius + 3, sy - radius);
+    ctx.fillText(`#${obj.track_id}`, sx + radius + 4, sy - radius);
+    ctx.fillStyle = color;
+    ctx.font = "9px sans-serif";
+    ctx.fillText(
+      CLASS_LABEL[obj.classification] ?? obj.classification.toUpperCase(),
+      sx + radius + 4, sy - radius + 10,
+    );
   }
+}
+
+/** A line from (x0,y0) to (x1,y1) with a small arrowhead, in canvas space. */
+function drawArrow(
+  ctx: CanvasRenderingContext2D,
+  x0: number, y0: number, x1: number, y1: number,
+  color: string,
+) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const length = Math.hypot(dx, dy);
+  if (length < 1) return; // sub-pixel -- an arrowhead here would be noise
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  ctx.stroke();
+
+  const headLength = Math.min(7, length * 0.4);
+  const angle = Math.atan2(dy, dx);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - headLength * Math.cos(angle - Math.PI / 6), y1 - headLength * Math.sin(angle - Math.PI / 6));
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - headLength * Math.cos(angle + Math.PI / 6), y1 - headLength * Math.sin(angle + Math.PI / 6));
+  ctx.stroke();
 }

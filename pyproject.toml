@@ -1,0 +1,36 @@
+[tool.pytest.ini_options]
+# Root-level pytest config for running the WHOLE repo's test suite in one invocation
+# (`python -m pytest -q` from C:\LiDAR-Vision360, no path arguments).
+#
+# WHY THIS FILE EXISTS
+# ---------------------
+# `perception/`, `simulator/`, and `cloud/backend/` are three independent sub-projects, each with
+# its own `pyproject.toml` and its own `tests/` directory. Each `tests/` directory has a
+# `tests/__init__.py` (making it an importable package named, literally, "tests"), and none of
+# perception/, simulator/, or cloud/backend/ has an `__init__.py` of its own -- so each
+# sub-project's own `testpaths = ["tests"]` only resolves correctly when pytest's rootdir IS that
+# sub-project (i.e. invoked from inside it, or with `-c <subproject>/pyproject.toml`).
+#
+# Without this file, a bare `pytest` run from the repo root has no config to scope it, so pytest
+# walks the whole tree and collects all three "tests" packages in ONE process. Python allows only
+# one module bound to the name `tests` in `sys.modules` at a time, so whichever one is imported
+# first (alphabetically, cloud/backend/tests) claims that name -- every file under the other two
+# then resolves `tests` to the WRONG package's __path__ and fails with
+# `ModuleNotFoundError: No module named 'tests.test_x'` during collection, before any test runs.
+#
+# THE FIX
+# -------
+# `--import-mode=importlib` avoids the sys.modules collision (verified empirically: with it, all
+# three suites collect and run together with zero errors). It changes only how pytest imports the
+# *test files themselves* -- none of these suites rely on pytest's rootdir sys.path insertion for
+# their OWN source imports (there is no conftest.py anywhere in the repo); every `from clearance
+# import ClearanceEngine`-style import already resolves through the editable-installed packages
+# (see the `__editable__.*.pth` files in .venv/Lib/site-packages), which importlib mode does not
+# touch. `testpaths` then tells the bare `pytest -q` invocation where to look.
+#
+# This file does NOT change how each sub-project is tested standalone (`cd perception && pytest
+# tests -q`, as documented in the root README's Testing section) -- that continues to resolve
+# `perception/pyproject.toml` as its config (pytest picks the nearest ancestor config to the given
+# path), completely unaffected by this file.
+testpaths = ["perception/tests", "simulator/tests", "cloud/backend/tests"]
+addopts = "--import-mode=importlib"

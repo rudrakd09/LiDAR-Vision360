@@ -517,8 +517,16 @@ class Settings(BaseSettings):
     # `simulator.SimulatorSource` for the requested scenario; "hardware" -> `datasources.
     # STM32Source`, still a placeholder (see that class's own docstring -- the STM32 UART protocol
     # is not yet defined, per PROJECT_SPECIFICATION.md). Any other value is rejected loudly by
-    # `get_sensor_source()` rather than silently falling back to one or the other. ---
-    data_source: str = "simulation"  # "simulation" | "hardware"
+    # `get_sensor_source()` rather than silently falling back to one or the other.
+    #
+    # "esp32_serial" is the REAL, in-service hardware topology (LiDAR -> STM32 -> ESP32 -> USB
+    # serial -> this PC), added alongside the two above rather than replacing either: the ESP32
+    # streams RAW `A:<deg> , D:<mm>` measurements, so the Edge runs the FULL local perception
+    # pipeline on them exactly as it does in simulation. That is the opposite of "hardware"
+    # above, where the STM32 is the perception node and the Edge only reshapes an
+    # already-finished result -- two genuinely different architectures that must not share one
+    # config value. See `datasources.esp32_serial` and docs/esp32-serial-integration.md. ---
+    data_source: str = "simulation"  # "simulation" | "hardware" | "esp32_serial"
 
     # STM32 UART hardware adapter config (Phase 8 architecture scaffolding; real values are Phase
     # 16, once hardware/firmware requirements are known) -- externalized per this project's own
@@ -533,6 +541,61 @@ class Settings(BaseSettings):
     # scenario, not configurable -- there's nothing to configure there); a single real hardware
     # rig has no per-run variant to encode, so one fixed, externalized label is enough.
     hardware_source_id: str = "stm32_hardware"
+
+    # --- ESP32 USB-serial raw-measurement link (`data_source == "esp32_serial"`, see
+    # datasources/esp32_serial/). Unlike every `stm32_*` protocol field below -- which stays unset
+    # because that binary wire format is genuinely unknown -- the ESP32's ASCII format IS known
+    # and fixed ("A:45 , D:1200", one measurement per line, degrees + millimetres), so these
+    # fields carry real working defaults. Only `esp32_serial_port` is deployment-specific and
+    # MUST be set in `.env` for your machine; run `python scripts/sniff_esp32.py --list` to find
+    # it. ---
+
+    # The COM port the ESP32 enumerates as. This default is a placeholder, NOT a detected value --
+    # COM ports differ per machine and per USB socket. Set LIDAR_ESP32_SERIAL_PORT in `.env`.
+    esp32_serial_port: str = "COM5"
+    esp32_serial_baudrate: int = 115200
+    # `SensorFrame.source_id` / `LiveState.source_id` for an esp32_serial run -- distinct from
+    # `hardware_source_id` above so a captured/persisted session is unambiguously attributable to
+    # the topology that produced it.
+    esp32_serial_source_id: str = "esp32_serial"
+
+    # Blocking-read timeout inside the reader thread. Short, because it is also the granularity at
+    # which that thread notices a stop request; it is NOT a data-rate parameter.
+    esp32_serial_read_timeout_s: float = 0.1
+    # How long `read_scan()` waits for a COMPLETE scan before raising ESP32SerialTimeoutError.
+    # Must comfortably exceed one revolution: at ~5 Hz a revolution is 0.2 s, so 5.0 s tolerates a
+    # long stall without the Edge loop giving up on a merely-slow sensor.
+    esp32_serial_scan_timeout_s: float = 5.0
+    esp32_serial_reconnect_initial_backoff_s: float = 1.0
+    esp32_serial_reconnect_max_backoff_s: float = 10.0
+    esp32_serial_max_reconnect_attempts: int | None = None  # None = retry indefinitely
+
+    # Bounded hand-off queue between the reader thread and the pipeline. At ~360 points/rev and
+    # ~10 rev/s this holds ~5.5 s of measurements; when full, the OLDEST lines are dropped so the
+    # pipeline always works on the freshest data (see `reader.SerialLineReader` "Backpressure").
+    esp32_serial_max_buffered_lines: int = 20000
+
+    # --- Scan-boundary detection (`frame_builder.ScanFrameBuilder`) ---
+    # A backward angle jump larger than this means the sweep wrapped (359 -> 0). 180 deg = half a
+    # revolution: far above any plausible sampling jitter, far below a full sweep, so it detects a
+    # wrap even when the scan skips angle 0 entirely.
+    esp32_serial_wrap_threshold_deg: float = 180.0
+    # Scans with fewer points than this are discarded rather than published -- a handful of noise
+    # points is not a scan, and feeding one to DBSCAN/risk downstream would produce meaningless
+    # objects. Lower this if your firmware genuinely emits very few points per revolution.
+    esp32_serial_min_points_per_scan: int = 10
+    # Hard cap protecting against a wrap that never arrives (stalled motor, stuck angle).
+    esp32_serial_max_points_per_scan: int = 5000
+    # A pending scan open longer than this is force-completed, so a stalled sensor surfaces as a
+    # (short) frame plus a warning rather than as an indefinite silence.
+    esp32_serial_max_scan_duration_s: float = 2.0
+    # How a bearing measured twice within one revolution is resolved:
+    # "last" (newest wins -- the default, freshest data), "first", or "keep_all".
+    esp32_serial_duplicate_angle_policy: str = "last"
+
+    # Emit the periodic "[SCAN] Frame completed / rate / parser health" summary every N scans.
+    # Per-scan logging at 10 Hz would flood the terminal (requirement 19); 0 disables it.
+    esp32_serial_log_every_n_scans: int = 20
 
     # --- STM32 wire-protocol configuration (Phase 8 architecture scaffolding for
     # datasources.stm32) -- every field below is `None` (an explicit "unset") until the hardware

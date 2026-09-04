@@ -9,12 +9,77 @@ written; this README tracks actual implementation status, per that document's ow
 > **Read this first:** the perception pipeline, tracking, TTC, clearance, risk, the sensor-fusion
 > architecture, the STM32→ESP32→Edge hardware-input framework (`ESP32Source` + the Phase-2
 > processed-perception contract), the STM32→ECU CAN-output software model, and the
-> Dashboard/Unity/PostgreSQL flow are all implemented and tested — but **against simulation,
-> mock-transport, and synthetic data only.** **No physical A3M1, R121, STM32, or ESP32 has been
-> connected to this system, and no hardware/DBC specification has been supplied — so
-> `DATA_SOURCE=hardware` cannot run against real hardware yet.** See
-> [Two Modes](#two-modes-simulation-and-hardware), [Current Status](#current-status),
-> [Limitations](#limitations), and `docs/hardware-validation-procedure.md`.
+> Dashboard/Unity/PostgreSQL flow are all implemented and tested. The **`DATA_SOURCE=hardware`**
+> (Wi-Fi, already-processed frames) and **legacy binary-UART** paths remain exercised against
+> mock transports and synthetic data only — no hardware/DBC specification has been supplied for
+> either.
+>
+> **A real, working hardware path now exists: `DATA_SOURCE=esp32_serial`** — LiDAR → STM32 →
+> ESP32 → **USB serial** → this PC, carrying raw `A:<deg> , D:<mm>` measurements that the Edge's
+> own full perception pipeline processes. See
+> **[LIVE mode](#live-mode-real-esp32-over-usb-serial)** and
+> [docs/esp32-serial-integration.md](docs/esp32-serial-integration.md).
+
+---
+
+## LIVE mode: real ESP32 over USB serial
+
+```
+LiDAR ──▶ STM32 ──▶ ESP32 ──▶ USB serial ──▶ Windows Edge PC ──▶ Dashboard
+                               (COM port)      ALL perception
+```
+
+The ESP32 emits **one raw measurement per line** — `A:45 , D:1200` (angle in degrees, distance in
+millimetres) — and the PC does everything else: parsing, validation, polar→Cartesian, 360° frame
+assembly, filtering, DBSCAN clustering, classification, tracking, clearance, collision/TTC, and
+scenario analysis. **The STM32/ESP32 firmware is unchanged and is not part of this repository.**
+
+### Quick start (Windows)
+
+```powershell
+# 0. One-time setup
+.\scripts\setup_env.ps1
+Copy-Item .env.example .env
+
+# 1. Find the COM port your ESP32 enumerated as
+python scripts\sniff_esp32.py --list
+
+# 2. Put it in .env  (or pass --port on the command line)
+#    LIDAR_ESP32_SERIAL_PORT=COM7
+
+# 3. Three terminals:
+python edge\main.py --mode live --port COM7                                    # Edge
+python -m uvicorn backend.main:app --app-dir cloud\backend\src --port 8000     # Backend
+cd cloud\dashboard; npm run dev                                                # Dashboard
+```
+
+Then open <http://localhost:5173>.
+
+### What LIVE mode guarantees
+
+* **No fabricated data, ever.** If the port will not open or no complete revolution arrives within
+  `LIDAR_ESP32_SERIAL_SCAN_TIMEOUT_S`, the Edge logs a warning, publishes
+  `HARDWARE_DATA_UNAVAILABLE` (which the dashboard shows explicitly), and keeps running. It never
+  substitutes generated points. The simulator is not importable on this code path.
+* **Graceful hardware handling.** Unplugging the ESP32 mid-run is not fatal: the reader closes the
+  handle, reports the real reason, and reconnects with exponential backoff. A scan straddling the
+  drop is discarded rather than stitched together.
+* **Every displayed value is measured.** Scan rate comes from real inter-scan intervals; clearance
+  from actual point-cloud geometry; risk/TTC/confidence from the pipeline. Values that genuinely
+  cannot be measured yet are `null`, not placeholders.
+* **LIVE and SIMULATION are separate by construction.** `--mode live` sets
+  `data_source = "esp32_serial"`, which `get_sensor_source()` can only satisfy with
+  `ESP32SerialSource`; `--mode simulation` is the only way to reach the simulator.
+
+Full reference — wire format, tunables, threading/backpressure, diagnostics, troubleshooting
+table: **[docs/esp32-serial-integration.md](docs/esp32-serial-integration.md)**.
+
+### Coordinate convention
+
+`x = distance_m·cos(angle)`, `y = distance_m·sin(angle)`; angles are degrees in `[0, 360)`
+counter-clockwise from forward, distances metres.
+**+X = FRONT, +Y = LEFT, −X = REAR, −Y = RIGHT.** Identical in the parser, pipeline, wire
+protocol, dashboard and Unity.
 
 ---
 
@@ -45,7 +110,7 @@ fusion work added since:
 | Objective | Status |
 |---|---|
 | Simulated 360° LiDAR data generation | ✅ Implemented (`simulator/`, 10 scenarios) |
-| Real LiDAR data integration via hardware adapter | 🔶 Framework implemented (`STM32Source` raw-serial adapter + `ESP32Source` processed-frame receiver); real protocol/hardware not yet connected |
+| Real LiDAR data integration via hardware adapter | ✅ Implemented for the in-service topology (`ESP32SerialSource`, `DATA_SOURCE=esp32_serial`: raw `A:<deg> , D:<mm>` over USB serial → full Edge pipeline). 🔶 The two other adapters (`STM32Source` binary UART, `ESP32Source` Wi-Fi processed-frames) remain scaffolding pending their protocol specs |
 | STM32 processed-perception data contract | ✅ Implemented (`models.stm32_processed.STM32ProcessedFrame`, versioned + validated) |
 | ESP32 gateway (STM32 → ESP32 → Wi-Fi → Edge) | 🔶 `ESP32Source` + replaceable transport implemented & mock-tested; real Wi-Fi protocol pending |
 | STM32 → Vehicle-ECU CAN output | 🔶 Configurable software model implemented & mock-tested (`can_output/`); no CAN/DBC spec, no bus |
@@ -128,16 +193,22 @@ independently recomputes detection, classification, tracking, TTC, clearance, or
 
 ## Two Modes: Simulation and Hardware
 
-`Settings.data_source` (`LIDAR_DATA_SOURCE`) selects the mode. Both converge on one `LiveState`;
-the Dashboard, Unity, and PostgreSQL are identical in both.
+`Settings.data_source` (`LIDAR_DATA_SOURCE`) selects the mode. All of them converge on one
+`LiveState`; the Dashboard, Unity, and PostgreSQL are identical across them.
 
-| | **Simulation** (`data_source=simulation`, default) | **Hardware** (`data_source=hardware`) |
-|---|---|---|
-| Source | `simulator.SimulatorSource` (10 scenarios) | `datasources.esp32.ESP32Source` — receives `STM32ProcessedFrame`s over a replaceable `ESP32Transport` |
-| Perception | runs on the Edge (`serve_unity_bridge.py`: preprocess→…→risk) | runs **on the STM32**; the Edge only re-shapes the processed frame into `LiveState` (`ProcessedFrameToLiveState`), never re-detects/tracks/scores |
-| Transport | in-process | `LIDAR_ESP32_TRANSPORT`: unset → `connect()` fails loudly (**never** falls back to simulation); `mock` → scripted SIMULATED ESP32 transport; a real name needs a `ProcessedFrameDeserializer`/`ESP32Transport` subclass |
-| No data | n/a | Edge → `STALE` / `RECONNECTING`; wire `HARDWARE_DATA_UNAVAILABLE`; Dashboard banner; **no synthetic fallback** |
-| CAN → ECU | n/a | `can_output` software model (opt-in, `LIDAR_CAN_OUTPUT_ENABLED=true`), independent of the ESP32 path |
+| | **Simulation** (`simulation`, default) | **LIVE USB serial** (`esp32_serial`) | **Wi-Fi processed frames** (`hardware`) |
+|---|---|---|---|
+| Source | `simulator.SimulatorSource` (10 scenarios) | `datasources.esp32_serial.ESP32SerialSource` — raw `A:<deg> , D:<mm>` lines off a COM port | `datasources.esp32.ESP32Source` — `STM32ProcessedFrame`s over a replaceable `ESP32Transport` |
+| Perception | runs on the Edge (preprocess→…→risk) | runs **on the Edge** — the *same* stages, unchanged | runs **on the STM32**; the Edge only re-shapes the finished frame into `LiveState`, never re-detects/tracks/scores |
+| Transport | in-process | USB serial (`pyserial`), background reader thread, auto-reconnect | `LIDAR_ESP32_TRANSPORT`: unset → `connect()` fails loudly; `mock` → scripted transport; a real name needs an `ESP32Transport` subclass |
+| No data | n/a | timeout → `HARDWARE_DATA_UNAVAILABLE` on the wire + Dashboard banner; reader keeps retrying; **no synthetic fallback** | Edge → `STALE`/`RECONNECTING`; wire `HARDWARE_DATA_UNAVAILABLE`; **no synthetic fallback** |
+| Status | ✅ working | ✅ **working — the in-service path** | 🔶 mock transport only |
+| CAN → ECU | n/a | n/a | `can_output` software model (opt-in) |
+
+`esp32_serial` and `hardware` are deliberately **separate values, not one merged "hardware" mode**:
+they are opposite architectures (perception on the PC vs. perception on the MCU) consuming
+incompatible inputs (raw points vs. finished objects). Keeping them apart is what lets the
+existing `ESP32Source`/`STM32ProcessedFrame` work stay untouched and its tests keep passing.
 
 The **10 simulation scenarios are permanent** and are the software regression suite. See
 `docs/esp32-integration.md`, `docs/can-output.md`, `docs/stm32-processed-contract.md`.
@@ -384,11 +455,16 @@ LiDAR-Vision360/
 │   │   ├── datasources/        SensorSource abstraction, SimulatedLiDARDataSource,
 │   │   │   ├── stm32/          legacy raw-serial STM32Source (transport, framing, CRC, sequence, health, parsers)
 │   │   │   │   └── processed/  STM32ProcessedFrame version gate + validation + serializer interface
-│   │   │   └── esp32/          ESP32Source, replaceable ESP32Transport, ProcessedFrameToLiveState, edge_runner
+│   │   │   ├── esp32/          ESP32Source, replaceable ESP32Transport, ProcessedFrameToLiveState, edge_runner
+│   │   │   └── esp32_serial/   LIVE USB-serial link: parser (A:<deg> , D:<mm>), frame_builder
+│   │   │                       (angle-wrap scan assembly), reader (threaded, reconnecting),
+│   │   │                       source (ESP32SerialSource)
 │   │   ├── pipeline/           LiveState assembly (LiveStateBuilder)
 │   │   ├── serialization/      Unity/dashboard wire-format message builders
 │   │   └── streaming/          TCP servers (raw + structured JSON), bounded outgoing queues
-│   └── tests/                  ~1056 tests (pytest)
+│   └── tests/                  ~1164 tests (pytest)
+├── edge/
+│   └── main.py                 Edge entrypoint: --mode live | simulation
 ├── simulator/                  Configurable 2D 360° LiDAR simulator
 │   ├── scenarios/               10 predefined scenario JSON files
 │   ├── src/simulator/          Ray-casting model, obstacles, noise, CLI, recording/replay
@@ -488,6 +564,34 @@ Play).
 .\scripts\stop_demo.ps1
 ```
 
+### LIVE mode (real ESP32 over USB serial)
+
+Three terminals. See [LIVE mode](#live-mode-real-esp32-over-usb-serial) above and
+`docs/esp32-serial-integration.md` for the full reference.
+
+```powershell
+python scripts\sniff_esp32.py --list          # find your COM port first
+python edge\main.py --mode live --port COM7
+```
+```powershell
+python -m uvicorn backend.main:app --app-dir cloud\backend\src --host 0.0.0.0 --port 8000
+```
+```powershell
+cd cloud\dashboard; npm run dev
+```
+
+`--rate` does not apply in LIVE mode: `read_scan()` returns when a revolution actually completes,
+so the sensor sets the pace and the Edge's rate limiter is disabled.
+
+### Simulation mode
+
+`edge/main.py` is the equivalent entrypoint for simulation, and is what the sections below
+describe by hand:
+
+```powershell
+python edge\main.py --mode simulation --scenario 08_approaching_obstacle --rate 10
+```
+
 To run each piece by hand instead (three terminals):
 
 ```powershell
@@ -555,9 +659,20 @@ Served by `cloud/backend`, at both a bare path and an `/api/`-prefixed path (e.g
 ## Testing
 
 ```bash
-pytest perception/tests -q      # run separately -- perception/ and simulator/ both define a `tests` package
+pytest -q      # from the repo root -- runs perception/, simulator/, and cloud/backend/ together
+```
+
+The root [`pyproject.toml`](pyproject.toml) makes this work: `perception/`, `simulator/`, and
+`cloud/backend/` each define their own `tests/` package (all three literally named `tests`), which
+collide if pytest collects them in one process without `--import-mode=importlib` — the root config
+sets that plus `testpaths` so a bare `pytest -q` from the repo root just works. Running a
+sub-project standalone continues to work exactly as before and is unaffected by the root config
+(pytest resolves the nearest ancestor config to whatever path you pass it):
+
+```bash
+pytest perception/tests -q
 pytest simulator/tests -q
-pytest cloud/backend/tests/test_state.py cloud/backend/tests/test_ingestion.py -q
+pytest cloud/backend/tests -q
 ```
 ```bash
 cd cloud/dashboard
@@ -569,13 +684,14 @@ hardware validation.** Results are kept in four never-combined categories:
 
 | Category | Suite | Result |
 |---|---|---|
-| **SOFTWARE UNIT** | `perception/tests` | **1056 passed** (incl. `test_stm32_processed_contract` 61, `test_esp32_*` 70, `test_can_output_*` 73, fusion 39) |
+| **SOFTWARE UNIT** | `perception/tests` | **1165 passed** (incl. `test_esp32_serial_*` 89 — parser 36, frame builder 26, source 19, end-to-end pipeline 8; `test_stm32_processed_contract` 61, `test_esp32_*` 70, `test_can_output_*` 73, fusion 39) |
 | **SOFTWARE UNIT** | `simulator/tests` | **243 passed**, 1 pre-existing flaky (`TestPole::test_pole_classifies_as_pole_like` — noise-driven, ~11/12 on a clean checkout) |
-| **SOFTWARE UNIT** | `cloud/backend` (`test_state.py` + `test_ingestion.py`) | **41 passed** (`test_api.py` = pre-existing hang, not run) |
+| **SOFTWARE UNIT** | `cloud/backend/tests` (all 3 files) | **81 passed** (`test_api.py`'s 40 tests are slow — ~85s standalone, WebSocket reconnect/backoff cases — not hung; previously excluded from quick local runs for that reason) |
 | **SOFTWARE UNIT** | `cloud/dashboard` (`tsc` + Vitest) | **exit 0**, **53 passed** |
 | **SIMULATION** | all 10 scenarios, backend + bridge, live `/debug/*` sampling | **10/10 verified** (see [Current Status](#current-status)) |
 | **MOCK HARDWARE** | `DATA_SOURCE=hardware` + `ESP32_TRANSPORT=mock`, backend + bridge + WebSocket + DB + failure injection | **pass** |
-| **PHYSICAL HARDWARE** | — | **NOT PERFORMED — no device / no spec** |
+| **LIVE SERIAL PATH** | `test_esp32_serial_*` — wire format, whitespace variants, every rejection reason, scan-boundary inference, reconnect, backpressure, wrong-baud detection, and raw lines → full pipeline → `LiveState` | **89 passed** (driven by a fake serial port, no device) |
+| **PHYSICAL HARDWARE** | `DATA_SOURCE=esp32_serial` against the real ESP32 | **NOT YET PERFORMED — no COM port was present on this machine** (`sniff_esp32.py --list` found none). Graceful no-hardware behaviour *was* verified live: correct diagnostic, no crash, no fabricated data, continuous retry. |
 
 ## Hardware Integration
 
@@ -652,7 +768,8 @@ no STM32 firmware exists in the repo, and no hardware/DBC specification has been
 `DATA_SOURCE=hardware` cannot run against real hardware. Nothing in this repository has processed
 a real hardware measurement.
 
-Pre-existing, unrelated: `cloud/backend/tests/test_api.py` hangs under `pytest` in this
+Pre-existing, unrelated: `cloud/backend/tests/test_api.py` is slow under `pytest` (~85s,
+WebSocket reconnect/backoff cases) in this
 environment (not run); `simulator/tests` `TestPole::test_pole_classifies_as_pole_like` is
 noise-driven flaky (~1/12).
 
@@ -667,7 +784,7 @@ noise-driven flaky (~1/12).
 - Unity C# is written and reviewed but not compiled/run (no Editor in this environment).
 - No production deployment, authentication, or historical-analytics UI beyond the dashboard's own
   bounded event timeline.
-- `cloud/backend/tests/test_api.py` hangs under `pytest`; `simulator` `TestPole` is flaky (~1/12).
+- `cloud/backend/tests/test_api.py` is slow under `pytest` (~85s, not hung); `simulator` `TestPole` is flaky (~1/12).
 
 ## Future Work
 
@@ -686,6 +803,7 @@ noise-driven flaky (~1/12).
 | [docs/architecture.md](docs/architecture.md) | Overall architecture, sensor-source abstraction, session/sequence management |
 | [docs/communication.md](docs/communication.md) | Edge↔Unity/Dashboard streaming protocol (versioned JSON envelope, framing, reliability) |
 | [docs/stm32-processed-contract.md](docs/stm32-processed-contract.md) | `STM32ProcessedFrame` schema, validation, versioning, → `LiveState` mapping (Phase 2) |
+| [docs/esp32-serial-integration.md](docs/esp32-serial-integration.md) | **LIVE USB-serial path** — wire format, coordinate convention, scan-boundary detection, every tunable, threading/backpressure, diagnostics and troubleshooting |
 | [docs/esp32-integration.md](docs/esp32-integration.md) | `ESP32Source`, transport abstraction, connection/stale/reconnect handling, config (Phase 3) |
 | [docs/mock-stm32-hardware-output.md](docs/mock-stm32-hardware-output.md) | Scripted MOCK STM32 HARDWARE OUTPUT generator + scenes (`realtime_arc` / `multi_object` / `tracking`) — software-only hardware-readiness (Phase 10) |
 | [docs/can-output.md](docs/can-output.md) | STM32→ECU CAN-output model: message/signal specs, bit-packer, transmission control, health (Phase 5) |

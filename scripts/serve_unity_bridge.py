@@ -35,6 +35,7 @@ from collision import CollisionRiskEngine
 from common.config import Settings, get_settings
 from common.logging import get_logger, setup_logging
 from coordinates import CoordinateTransformer
+from datasources.esp32_serial import ESP32SerialTimeoutError
 from fusion import FusionEngine
 from mapping import OccupancyGridMapper
 from models.collision import VehicleState
@@ -50,6 +51,11 @@ logger = get_logger(__name__)
 
 
 def run(args: argparse.Namespace, settings: Settings) -> None:
+    # `esp32_serial` (the real USB-serial link) deliberately does NOT branch here: the ESP32 sends
+    # RAW measurements, so the Edge must run the full pipeline below on them -- byte-for-byte the
+    # same stages simulation runs. The only differences are pacing and error reporting, both
+    # handled inline below via `is_realtime_source`.
+    #
     # Hardware mode (Phase 3): the STM32 is the perception node; the Edge receives ALREADY-
     # PROCESSED frames over the ESP32 -> Wi-Fi link and must NOT re-run the pipeline below. This
     # dispatches to the dedicated hardware edge loop (datasources.esp32.edge_runner) and returns.
@@ -119,10 +125,21 @@ def run(args: argparse.Namespace, settings: Settings) -> None:
         status="running", source_id=source.source_id, scan_rate_hz=args.rate, session_id=live_state_builder.session_id,
     ))
 
-    period_s = 1.0 / args.rate if args.rate > 0 else 0.0
+    # A real sensor sets its own rate: `read_scan()` returns exactly when a revolution completes.
+    # Sleeping on top of that would only add latency and let the reader's line queue back up, so
+    # the rate limiter is disabled for a live source regardless of `--rate` (which exists to pace
+    # the simulator, whose `read_scan()` returns instantly).
+    is_realtime_source = settings.data_source == "esp32_serial"
+    period_s = 0.0 if is_realtime_source else (1.0 / args.rate if args.rate > 0 else 0.0)
     scan_index = 0
 
-    logger.info("Streaming scenario '%s' at up to %.1f scans/sec. Ctrl+C to stop.", args.scenario, args.rate)
+    if is_realtime_source:
+        logger.info(
+            "Streaming LIVE from %s (%s @ %d baud) at the sensor's own rate. Ctrl+C to stop.",
+            source.source_id, settings.esp32_serial_port, settings.esp32_serial_baudrate,
+        )
+    else:
+        logger.info("Streaming scenario '%s' at up to %.1f scans/sec. Ctrl+C to stop.", args.scenario, args.rate)
     try:
         with source:
             while True:
@@ -151,6 +168,20 @@ def run(args: argparse.Namespace, settings: Settings) -> None:
                         tracked_scan=tracked, preprocessed_scan=clean, collision_assessment=assessment,
                         clearance_assessment=clearance, pipeline_processing_s=pipeline_processing_s,
                     )
+                except ESP32SerialTimeoutError as e:
+                    # A live sensor that went quiet (unplugged, not spinning, wrong baud) is an
+                    # expected operational condition, not a pipeline bug -- so: a one-line warning
+                    # rather than `logger.exception`'s full traceback every few seconds, and the
+                    # `HARDWARE_DATA_UNAVAILABLE` code the dashboard already renders as an
+                    # explicit "no hardware data" banner (see App.tsx / routes/debug.py) rather
+                    # than the generic PIPELINE_ERROR. No scan happened, so `scan_index` is not
+                    # advanced, and nothing synthetic is published to fill the gap.
+                    logger.warning("[SERIAL] %s", e)
+                    json_server.publish(build_error_message(
+                        code="HARDWARE_DATA_UNAVAILABLE", message=str(e),
+                        session_id=live_state_builder.session_id, source_id=source.source_id,
+                    ))
+                    continue
                 except Exception as e:  # noqa: BLE001 -- deliberately broad: one bad scan must not kill the bridge, see module docstring
                     logger.exception("[STREAM] Pipeline error on scan %d, skipping.", scan_index)
                     json_server.publish(build_error_message(
