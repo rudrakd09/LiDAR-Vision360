@@ -1,5 +1,6 @@
 """Tests for clearance.geometry: quadrant classification and per-direction nearest-point scan."""
 
+from clearance.geometry import _envelope_offset as _envelope_for
 from clearance.geometry import classify_quadrant, nearest_in_each_quadrant
 from collision.geometry import vehicle_footprint
 from common.config import Settings
@@ -94,6 +95,28 @@ class TestNearestInEachQuadrant:
         scan = _scan([_point(0.5, 0.0)])  # well inside envelope_front (~3.25m default)
         readings = nearest_in_each_quadrant(scan, VehicleState(), footprint, DEFAULT_SETTINGS)
         assert readings[ClearanceDirection.FRONT].distance_m == 0.0
+
+    def test_near_zero_self_return_is_skipped_not_treated_as_contact(self):
+        # A return within min_valid_distance_m of the sensor is an ego/self return. It must NOT
+        # drive a false 0.00 m clearance (the live-rig REAR/LEFT/RIGHT = 0.00 bug): each quadrant
+        # falls back to its clear-to-range default instead.
+        footprint = vehicle_footprint(DEFAULT_SETTINGS)
+        eps = DEFAULT_SETTINGS.min_valid_distance_m - 0.05
+        scan = _scan([_point(eps, 0.0), _point(-eps, 0.0), _point(0.0, eps), _point(0.0, -eps), _point(0.0, 0.0)])
+        readings = nearest_in_each_quadrant(scan, VehicleState(), footprint, DEFAULT_SETTINGS)
+        for d in ClearanceDirection:
+            assert readings[d].world_point is None
+            assert readings[d].distance_m == round(
+                max(0.0, DEFAULT_SETTINGS.lidar_range_max_m - _envelope_for(d, footprint)), 4
+            )
+            assert readings[d].distance_m > 0.0  # "no valid measurement" != zero clearance
+
+    def test_real_close_object_just_outside_self_return_radius_still_registers(self):
+        footprint = vehicle_footprint(DEFAULT_SETTINGS)
+        d = DEFAULT_SETTINGS.min_valid_distance_m + 0.2
+        readings = nearest_in_each_quadrant(_scan([_point(0.0, d)]), VehicleState(), footprint, DEFAULT_SETTINGS)
+        assert readings[ClearanceDirection.LEFT].world_point is not None
+        assert readings[ClearanceDirection.LEFT].distance_m == round(max(0.0, d - footprint.envelope_left), 4)
 
     def test_four_points_populate_all_four_directions_independently(self):
         footprint = vehicle_footprint(DEFAULT_SETTINGS)

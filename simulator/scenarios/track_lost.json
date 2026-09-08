@@ -1,0 +1,17 @@
+{
+  "id": "track_lost",
+  "name": "Track lost -- object leaves sensor range",
+  "description": "A box 9 m ahead moving away fast (+X at 6.0 m/s). Within a few scans it passes beyond the sensor's usable range and stops producing returns. Its track is not deleted instantly: it coasts, then expires through the normal lifecycle (tracking_max_missed_scans), emitting a track_lost event and disappearing from the tracked-object roster.",
+  "noise": { "distance_noise_std_m": 0.0, "outlier_probability": 0.0, "missing_probability": 0.0, "seed": 42 },
+  "obstacles": [
+    {
+      "type": "rectangle",
+      "center_x": 9.0,
+      "center_y": 0.0,
+      "width": 1.8,
+      "depth": 1.0,
+      "tag": "vehicle_like",
+      "moving": { "velocity_mps": 6.0, "direction_deg": 0.0 }
+    }
+  ]
+}

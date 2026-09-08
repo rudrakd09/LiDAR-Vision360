@@ -74,8 +74,19 @@ def nearest_in_each_quadrant(
     A quadrant with no qualifying point defaults to `lidar_range_max_m` minus that direction's own
     envelope offset (floored at 0) -- "no return" means "clear at least out to sensor range", the
     same convention preprocessing/mapping already use elsewhere for a missing return, not a new
-    rule invented here (see docs/mapping.md "no return" handling).
+    rule invented here (see docs/mapping.md "no return" handling). "No valid measurement" is
+    therefore NEVER reported as zero clearance -- a genuinely blank sector reads as clear-to-range.
+
+    Points closer than `Settings.min_valid_distance_m` are skipped here as well as in preprocessing
+    (defense-in-depth): a near-zero self return would otherwise drive `raw_extent -
+    envelope_offset` hugely negative in its quadrant, clamp to 0.0 below, and force a false
+    "0.00 m" REAR/LEFT/RIGHT clearance. The primary self-return removal -- including a self-return
+    *arc* off the ego body a few tens of cm out -- is the ego-footprint mask in
+    `preprocessing.validation` (`common.geometry.EgoFootprint`); by the time a `CartesianScan`
+    reaches here those points are already gone, so a genuinely blank sector reads clear-to-range,
+    never zero.
     """
+    min_valid_distance_m = settings.min_valid_distance_m
     best: dict[ClearanceDirection, QuadrantReading] = {
         d: QuadrantReading(distance_m=max(0.0, settings.lidar_range_max_m - _envelope_offset(d, footprint)), world_point=None)
         for d in ClearanceDirection
@@ -84,6 +95,8 @@ def nearest_in_each_quadrant(
     for point in scan.points:
         if not point.valid or point.distance <= 0.0 or point.distance > settings.lidar_range_max_m:
             continue
+        if point.distance < min_valid_distance_m:
+            continue  # near-zero self return -- not a real obstacle surface
 
         along, lateral = to_vehicle_frame(point.x, point.y, vehicle_state)
         direction = classify_quadrant(along, lateral)

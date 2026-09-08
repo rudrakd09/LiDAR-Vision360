@@ -1,0 +1,9 @@
+{
+  "id": "safe",
+  "name": "Safe -- everything far away",
+  "description": "A single wall 10 m directly ahead, stationary. In the projected path but well beyond the warning distance and not approaching, so collision risk stays SAFE, every directional clearance stays large, and there is no meaningful TTC (N/A).",
+  "noise": { "distance_noise_std_m": 0.0, "outlier_probability": 0.0, "missing_probability": 0.0, "seed": 42 },
+  "obstacles": [
+    { "type": "wall", "x1": 10.0, "y1": -3.0, "x2": 10.0, "y2": 3.0 }
+  ]
+}

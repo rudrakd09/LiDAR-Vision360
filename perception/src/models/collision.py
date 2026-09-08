@@ -59,7 +59,7 @@ class CollisionRiskResult(BaseModel):
 
     in_projected_path: bool = Field(..., description="Purely geometric: is the object within the vehicle's heading-aligned corridor (body + side margins), independent of speed/TTC. See docs/collision.md \"Projected path\".")
 
-    ttc: float | None = Field(default=None, ge=0.0, description="Closed-form longitudinal time-to-collision, seconds. None = not approaching / undefined (moving away, or below the closing-speed noise floor). Already-overlapping footprints report 0.0, not None.")
+    ttc: float | None = Field(default=None, ge=0.0, description="Closed-form longitudinal time-to-collision, seconds. None (rendered 'N/A') whenever the object is not genuinely approaching -- moving away, stationary, or below the closing-speed noise floor -- checked before proximity, so a stationary object that already overlaps the footprint is still None, not 0.0. 0.0 is reserved for an object that IS closing and whose footprint already overlaps (contact now). Also None for a centroid within LIDAR_MIN_VALID_DISTANCE_M of the sensor (self return).")
     collision_predicted: bool = Field(..., description="From the discrete footprint-intersection simulation over collision_prediction_horizon_s -- a distinct, cross-checking computation from `ttc` (correctly handles a laterally-crossing object). See docs/collision.md \"Collision prediction\".")
     predicted_collision_time: float | None = Field(default=None, ge=0.0, description="Seconds from now, from the simulation above; None if collision_predicted is False.")
     predicted_collision_position: Point2D | None = Field(default=None, description="World-frame position at predicted_collision_time; None if collision_predicted is False.")

@@ -93,6 +93,104 @@ class TestEmptyAndInvalidScans:
         assert result.valid_count == 9
 
 
+_NO_EGO_MASK = Settings(_env_file=None, ego_footprint_filter_enabled=False)
+
+
+class TestNearFieldSelfReturnFiltering:
+    """`Settings.min_valid_distance_m` (radial cutoff) enforced end-to-end through the
+    Preprocessor. Isolated from the ego-footprint mask (`ego_footprint_filter_enabled=False`) so
+    this class exercises exactly that one knob -- the geometric mask has its own class below."""
+
+    def test_ring_of_origin_returns_is_removed_but_real_points_survive(self):
+        # The exact shape scenario 08 produces when its obstacle edge crosses the origin: a full
+        # ring of returns clamped up to lidar_range_min_m (0.05 m), which clears the old
+        # `< min_range_m` test. With min_valid_distance_m the whole ring must be dropped.
+        origin_ring = [LiDARPoint(angle=float(a), distance=0.05, timestamp=1000.0) for a in range(0, 360, 3)]
+        real_wall = [LiDARPoint(angle=float(a) + 1.0, distance=5.0, timestamp=1000.0) for a in range(0, 360, 3)]
+
+        result = Preprocessor(settings=_NO_EGO_MASK).process(_scan(origin_ring + real_wall))
+
+        assert result.total_count == len(origin_ring) + len(real_wall)
+        assert result.invalid_count == len(origin_ring)
+        assert result.valid_count == len(real_wall)
+        # Nothing anywhere near the origin survived into the cleaned point cloud.
+        assert result.points, "the real wall should still be there"
+        assert min(p.distance for p in result.points) >= _NO_EGO_MASK.min_valid_distance_m
+
+    def test_legitimate_close_obstacle_outside_the_cutoff_is_kept(self):
+        # 0.6 m: outside the min_valid_distance_m radial cutoff. (This class disables the ego mask;
+        # with a centre-mounted sensor a 0.6 m return is inside the vehicle body and the geometric
+        # mask -- correctly -- removes it. See TestEgoFootprintMask for that behaviour and for the
+        # bumper-mount case where a genuine 0.5 m obstacle survives.)
+        close = [LiDARPoint(angle=float(a), distance=0.6, timestamp=1000.0) for a in range(0, 360, 10)]
+        result = Preprocessor(settings=_NO_EGO_MASK).process(_scan(close))
+        assert result.invalid_count == 0
+        assert len(result.points) == len(close)
+
+
+class TestEgoFootprintMask:
+    """`preprocessing.validation` rejects returns whose (x, y) lands inside the ego vehicle body
+    (`common.geometry.EgoFootprint`) as `INSIDE_EGO_FOOTPRINT` -- the geometric self-return guard.
+    This is what removes a self-return *arc* (a cluster near the origin) that the per-point radial
+    `min_valid_distance_m` check cannot, since each arc point's own distance can sit a few tens of
+    cm out while the cluster centroid hugs the origin (the live-rig track-1 at ~0.4 m)."""
+
+    def _self_return_arc(self, *, distance: float, lo_deg: int, hi_deg: int) -> list[LiDARPoint]:
+        return [LiDARPoint(angle=float(a), distance=distance, timestamp=1000.0) for a in range(lo_deg, hi_deg, 2)]
+
+    def test_self_return_arc_at_0_4m_is_rejected_as_inside_ego_footprint(self):
+        from preprocessing.validation import InvalidReason, validate_points
+
+        arc = self_return_arc = self._self_return_arc(distance=0.42, lo_deg=100, hi_deg=216)  # rear-left arc
+        real_wall = [LiDARPoint(angle=float(a % 360), distance=6.0, timestamp=1000.0) for a in range(-20, 21)]
+        cfg = Preprocessor(settings=DEFAULT_SETTINGS).config
+        valid, invalid_count, reasons = validate_points(
+            arc + real_wall, cfg.min_range_m, cfg.max_range_m, cfg.min_valid_distance_m, cfg.ego_footprint
+        )
+        assert reasons[InvalidReason.INSIDE_EGO_FOOTPRINT] == len(arc)
+        assert invalid_count == len(arc)
+        assert {round(p.distance, 1) for p in valid} == {6.0}   # only the real wall survived
+
+    def test_arc_never_forms_a_cluster_or_track_but_the_real_wall_does(self):
+        from clustering import DBSCANClusterer
+        from coordinates import CoordinateTransformer
+        from objects import GeometricClassifier
+        from tracking import ObjectTracker
+
+        pre, tf = Preprocessor(settings=DEFAULT_SETTINGS), CoordinateTransformer()
+        cl, gc, tr = DBSCANClusterer(settings=DEFAULT_SETTINGS), GeometricClassifier(), ObjectTracker(settings=DEFAULT_SETTINGS)
+
+        for seq in range(4):
+            pts = self._self_return_arc(distance=0.42, lo_deg=100, hi_deg=216)
+            pts += [LiDARPoint(angle=float(a % 360), distance=6.0, timestamp=1000.0 + seq) for a in range(-20, 21)]
+            seen = {round(p.angle) for p in pts}
+            pts += [LiDARPoint(angle=float(a), distance=12.0, timestamp=1000.0 + seq) for a in range(360) if a not in seen]
+            frame = _scan(pts, scan_id=f"s{seq}", sequence_number=seq)
+            tracked = tr.update(gc.classify(cl.cluster(tf.transform(pre.process(frame)))))
+
+        # exactly one track -- the real wall at ~6 m -- and nothing near the origin
+        assert len(tracked.objects) == 1
+        obj = tracked.objects[0]
+        assert obj.distance > 4.0
+        assert math.hypot(obj.centroid.x, obj.centroid.y) > 4.0
+
+    def test_disabled_flag_lets_the_arc_through_again(self):
+        arc = self._self_return_arc(distance=0.42, lo_deg=100, hi_deg=216)
+        on = Preprocessor(settings=DEFAULT_SETTINGS).process(_scan(list(arc)))
+        off = Preprocessor(settings=_NO_EGO_MASK).process(_scan(list(arc)))
+        assert on.point_count == 0                 # masked
+        assert off.point_count == len(arc)         # opt-out honoured
+
+    def test_bumper_mounted_sensor_keeps_a_genuine_0_5m_obstacle_ahead(self):
+        # lidar_mount_x_m places the body BEHIND the sensor, so a real obstacle 0.5 m dead ahead
+        # is outside the footprint rectangle and must survive.
+        bumper = Settings(_env_file=None, lidar_mount_x_m=2.2)
+        ahead = [LiDARPoint(angle=float(a % 360), distance=0.5, timestamp=1000.0) for a in range(-15, 16)]
+        result = Preprocessor(settings=bumper).process(_scan(ahead))
+        assert result.invalid_count == 0
+        assert result.point_count == len(ahead)
+
+
 class TestUnexpectedShapes:
     def test_duplicate_angles_do_not_crash(self):
         points = [LiDARPoint(angle=45.0, distance=5.0, timestamp=0.0), LiDARPoint(angle=45.0, distance=5.2, timestamp=0.0)]

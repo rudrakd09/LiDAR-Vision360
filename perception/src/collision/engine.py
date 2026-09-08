@@ -117,6 +117,44 @@ class CollisionRiskEngine:
         distance = round(math.hypot(relative_position.x, relative_position.y), 4)
         relative_speed = round(relative_velocity.speed, 4)
 
+        # Defense-in-depth self-return guard. Self returns are now removed at the SOURCE, in
+        # preprocessing -- radially (near the origin) and, primarily, geometrically (any return
+        # whose (x, y) is inside the ego vehicle body, common.geometry.EgoFootprint) -- so no
+        # phantom near-origin cluster or track normally forms at all. This guard is the residual
+        # catch for a track that was created BEFORE the preprocessing mask took effect and is now
+        # COASTING on its stale last-known centroid for a few scans before the tracker expires it:
+        # such a track drives neither risk nor TTC, still appears in `results` (honest
+        # object_count), and ages out via the normal lifecycle. It is intentionally the narrow
+        # radial test, not the full ego-body rectangle -- the rectangle is 2.25 m deep, and
+        # widening this guard that far would also silence a genuine close/approaching obstacle,
+        # which is the collision engine's whole job.
+        if distance < settings.min_valid_distance_m:
+            if obj.track_id:
+                self._last_accepted_risk[obj.track_id] = RiskLevel.SAFE
+            return CollisionRiskResult(
+                track_id=obj.track_id,
+                classification=obj.classification,
+                distance=distance,
+                relative_position=relative_position,
+                relative_velocity=relative_velocity,
+                relative_speed=relative_speed,
+                in_projected_path=False,
+                ttc=None,
+                collision_predicted=False,
+                predicted_collision_time=None,
+                predicted_collision_position=None,
+                risk_level=RiskLevel.SAFE,
+                risk_score=0.0,
+                reason=[
+                    f"Centroid is {distance:.2f} m from the sensor, within the "
+                    f"{settings.min_valid_distance_m:.2f} m self-return radius "
+                    "(LIDAR_MIN_VALID_DISTANCE_M) -- treated as an ego-vehicle/sensor self return, "
+                    "not an environmental object. Excluded from risk and TTC; will expire via the "
+                    "normal track lifecycle."
+                ],
+                timestamp=timestamp,
+            )
+
         path_membership = in_projected_path(obj.centroid, vehicle_state, footprint, settings)
 
         ttc = compute_ttc(relative_position, relative_velocity, vehicle_state.pose.heading, footprint, obj.width, obj.depth, settings)

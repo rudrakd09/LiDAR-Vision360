@@ -1,0 +1,17 @@
+{
+  "id": "critical",
+  "name": "Critical -- fast close approach",
+  "description": "A vehicle-sized box 7.5 m ahead closing fast at 3.0 m/s. Longitudinal TTC is already below the critical 2.0 s threshold and keeps shrinking, so risk is CRITICAL from the first assessed frame, driven by a genuine dangerous finite TTC (not by an invalid zero-distance return).",
+  "noise": { "distance_noise_std_m": 0.0, "outlier_probability": 0.0, "missing_probability": 0.0, "seed": 42 },
+  "obstacles": [
+    {
+      "type": "rectangle",
+      "center_x": 7.5,
+      "center_y": 0.0,
+      "width": 1.8,
+      "depth": 1.5,
+      "tag": "vehicle_like",
+      "moving": { "velocity_mps": 3.0, "direction_deg": 180.0 }
+    }
+  ]
+}

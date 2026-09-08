@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from common.config import Settings, get_settings
+from common.geometry import EgoFootprint
 from common.logging import get_logger
 from models.preprocessing import PreprocessedScan
 from models.scan import ScanFrame
@@ -36,7 +37,7 @@ from .denoise import median_filter
 from .outliers import detect_outliers
 from .quality import compute_quality_statistics
 from .temporal import TemporalFilter
-from .validation import validate_points
+from .validation import InvalidReason, validate_points
 
 logger = get_logger(__name__)
 
@@ -54,6 +55,12 @@ class PreprocessingConfig:
     median_filter_window: int
     temporal_filter_enabled: bool
     temporal_filter_alpha: float
+    # Self-return guards. Defaulted so existing callers that build a PreprocessingConfig by hand
+    # keep working; `from_settings` always supplies the real configured values.
+    #   - min_valid_distance_m: small radial cutoff (Settings.min_valid_distance_m).
+    #   - ego_footprint: geometric ego-body mask (common.geometry.EgoFootprint); None disables it.
+    min_valid_distance_m: float = 0.0
+    ego_footprint: EgoFootprint | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "PreprocessingConfig":
@@ -65,6 +72,8 @@ class PreprocessingConfig:
             median_filter_window=settings.preprocessing_median_filter_window,
             temporal_filter_enabled=settings.preprocessing_temporal_filter_enabled,
             temporal_filter_alpha=settings.preprocessing_temporal_filter_alpha,
+            min_valid_distance_m=settings.min_valid_distance_m,
+            ego_footprint=EgoFootprint.from_settings(settings),
         )
 
 
@@ -83,10 +92,23 @@ class Preprocessor:
         total_count = len(scan.points)
 
         valid_points, invalid_count, reason_counts = validate_points(
-            scan.points, self.config.min_range_m, self.config.max_range_m
+            scan.points,
+            self.config.min_range_m,
+            self.config.max_range_m,
+            self.config.min_valid_distance_m,
+            self.config.ego_footprint,
         )
         if reason_counts:
             logger.debug("Scan %s: %d/%d measurements invalid (%s)", scan.scan_id, invalid_count, total_count, dict(reason_counts))
+        ego_masked = reason_counts.get(InvalidReason.INSIDE_EGO_FOOTPRINT, 0)
+        if ego_masked:
+            # Deliberate, low-frequency signal (DEBUG, and only when > 0): proves at a glance
+            # that the ego vehicle's own body is being seen and correctly rejected, rather than
+            # leaking into clustering as a phantom near-origin "object".
+            logger.debug(
+                "[EGO_MASK] Scan %s: rejected %d return(s) inside the ego-vehicle footprint as self returns.",
+                scan.scan_id, ego_masked,
+            )
 
         # Canonical angle order is required for correct circular-neighbor handling below, and is
         # a useful invariant for every downstream consumer regardless of raw scan order.

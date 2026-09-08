@@ -55,6 +55,23 @@ class TestAlreadyOverlapping:
         ttc = compute_ttc(Point2D(x=0.0, y=0.0), Velocity2D(vx=-1.0, vy=0.0), 0.0, FOOTPRINT, 1.0, 1.0, DEFAULT_SETTINGS)
         assert ttc == 0.0
 
+    def test_overlapping_but_stationary_gives_none_not_zero(self):
+        # The closing-speed gate is checked BEFORE the overlap check: a stationary object that
+        # already overlaps the footprint has no "time to collision" -- it is a distance/clearance
+        # concern, so TTC must be N/A (None), never 0.0. (assess_risk still escalates it by
+        # distance.)
+        ttc = compute_ttc(Point2D(x=0.5, y=0.0), Velocity2D(vx=0.0, vy=0.0), 0.0, FOOTPRINT, 1.0, 1.0, DEFAULT_SETTINGS)
+        assert ttc is None
+
+    def test_overlapping_but_receding_gives_none_not_zero(self):
+        ttc = compute_ttc(Point2D(x=0.5, y=0.0), Velocity2D(vx=2.0, vy=0.0), 0.0, FOOTPRINT, 1.0, 1.0, DEFAULT_SETTINGS)
+        assert ttc is None
+
+    def test_overlapping_and_genuinely_closing_still_gives_zero(self):
+        # Only a real approach + overlap yields 0.0 (contact now).
+        ttc = compute_ttc(Point2D(x=0.5, y=0.0), Velocity2D(vx=-1.0, vy=0.0), 0.0, FOOTPRINT, 1.0, 1.0, DEFAULT_SETTINGS)
+        assert ttc == 0.0
+
 
 class TestNoiseFloor:
     def test_closing_speed_at_or_below_minimum_is_undefined(self):

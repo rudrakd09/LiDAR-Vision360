@@ -1,0 +1,17 @@
+{
+  "id": "moving_away",
+  "name": "Moving away -- receding object",
+  "description": "A vehicle-sized box starting 7 m ahead and moving AWAY at 2.0 m/s (+X). Its distance grows every scan, its radial relative velocity is positive (opening), TTC stays N/A, and risk stays SAFE -- it is never flagged CRITICAL merely for existing / having once been close.",
+  "noise": { "distance_noise_std_m": 0.0, "outlier_probability": 0.0, "missing_probability": 0.0, "seed": 42 },
+  "obstacles": [
+    {
+      "type": "rectangle",
+      "center_x": 7.0,
+      "center_y": 0.0,
+      "width": 1.8,
+      "depth": 1.5,
+      "tag": "vehicle_like",
+      "moving": { "velocity_mps": 2.0, "direction_deg": 0.0 }
+    }
+  ]
+}

@@ -130,16 +130,25 @@ lateral/steering velocity is modeled anywhere in this project):
 
 1. Rotate `relative_position`/`relative_velocity` into the vehicle's heading-aligned frame
    (`along`, `lateral`) via `collision.geometry.rotate_to_heading`.
-2. `remaining_gap = |along| - vehicle_contact_gap - object_contact_gap`, where
+2. `closing_speed = closing_speed_along(...)` (positive = the gap is shrinking). If
+   `closing_speed <= collision_minimum_closing_speed_mps` (a noise floor, `0.05 m/s` by default)
+   -> **`ttc = None`** (not meaningfully approaching -- covers "moving away", "stationary", and
+   noisy sub-threshold velocity). **This gate is checked first**, before proximity: an object
+   that is not closing has no "time to collision" regardless of how close it is -- that is a
+   distance/clearance concern, and `assess_risk`'s distance rule still escalates it. So a
+   stationary obstacle, even one already overlapping the footprint, reports `ttc = None` ("N/A"),
+   not `0.0`.
+3. `remaining_gap = |along| - vehicle_contact_gap - object_contact_gap`, where
    `vehicle_contact_gap` is the vehicle's own envelope extent on the relevant side (front if the
    object is ahead, rear if behind) and `object_contact_gap` is the object's own along-axis
    half-extent (see "Object footprint approximation" below).
-3. If `remaining_gap <= 0`, the footprints already overlap along this axis -> **`ttc = 0.0`**.
-4. Otherwise, `closing_speed = closing_speed_along(...)` (positive = the gap is shrinking).
-   `closing_speed <= collision_minimum_closing_speed_mps` (a noise floor, `0.05 m/s` by default)
-   -> **`ttc = None`** (not meaningfully approaching -- covers both "moving away" and
-   "genuinely stationary relative motion").
+4. If `remaining_gap <= 0`, the object is closing **and** the footprints already overlap along
+   this axis -> **`ttc = 0.0`** (contact now).
 5. Otherwise, **`ttc = remaining_gap / closing_speed`**.
+
+A centroid within `min_valid_distance_m` (`LIDAR_MIN_VALID_DISTANCE_M`) of the sensor is treated
+by `collision.engine` as an ego/self return: `ttc = None`, `risk = SAFE`, excluded from the
+overall risk. See "Self-return guard" below.
 
 This is a **1D projection** of the true motion onto the heading axis -- a deliberate
 simplification. It correctly, cheaply handles the common case (an object ahead/behind on a
@@ -150,9 +159,11 @@ what "Collision prediction" below is for -- kept as a **separate, distinct value
 
 **Edge cases**, all directly unit-tested (`perception/tests/test_collision_ttc.py`):
 zero relative velocity -> `None`; negative closing velocity (moving away) -> `None`, never a
-negative TTC; already-overlapping footprints -> `0.0`, never a crash; no division by zero (the
-minimum-closing-speed gate is checked *before* any division); a genuinely large TTC (slow
-approach from far away) is still a real, uncapped number -- only the discrete simulation
+negative TTC; stationary object already overlapping the footprint -> `None` (not closing);
+closing object already overlapping the footprint -> `0.0` (contact now); never a crash; no
+division by zero (the minimum-closing-speed gate is checked *before* any division); a genuinely
+large TTC (slow approach from far away) is still a real, uncapped number -- only the discrete
+simulation
 (`collision_predicted`) is horizon-bounded, `ttc` itself is not.
 
 ## Collision prediction
@@ -374,6 +385,26 @@ velocity vectors, and the predicted collision point (red X) if any.
 python scripts/visualize_collision.py --scenario 08_approaching_obstacle --scans 20 --vehicle-speed 0 --visualize --explain
 ```
 
+## Self-return guard
+
+`CollisionRiskEngine.evaluate_object` short-circuits any object whose centroid is within
+`min_valid_distance_m` (`LIDAR_MIN_VALID_DISTANCE_M`, default `0.30 m`) of the sensor: it returns
+`risk_level = SAFE`, `ttc = None`, `in_projected_path = False`, `collision_predicted = False`, and
+a `reason` explaining it was treated as an ego-vehicle/sensor self return.
+
+Preprocessing already removes self returns before any cluster can form -- both this radial cutoff
+AND the **geometric ego-vehicle footprint mask** (`common.geometry.EgoFootprint`,
+`preprocessing.validation` `INSIDE_EGO_FOOTPRINT`), which is what catches a self-return *arc* off
+the vehicle body a few tens of centimetres out (the live-rig `#track-1` at ~0.4 m). So a *fresh*
+cluster cannot form from a self return. This guard is the residual catch for a track created
+*before* the mask took effect and now **coasting** on its stale last-known centroid for a few
+scans before the tracker lets it expire -- without the guard, `assess_risk`'s distance rule would
+report CRITICAL and `compute_ttc` `0.0 s` off a physically meaningless position (this is the exact
+failure the live
+ESP32 rig showed: a `track-38`, `vehicle_like`, "~0.2 m", CRITICAL, MIN TTC `0.0`). The object
+still appears in `results` (so `object_count` stays honest) and ages out via the normal track
+lifecycle; it simply never drives risk or TTC.
+
 ## Limitations
 
 - **Prototype, not certified.** See "Status" -- every threshold is a reasoned default, not a
@@ -415,11 +446,15 @@ REAR the remainder behind, RIGHT `[-135, -45)` -- every point belongs to exactly
 **Per-direction distance**: for the closest qualifying point in each quadrant, the gap from that
 direction's vehicle *safety-margin envelope edge* (`collision.geometry.vehicle_footprint` -- the
 same envelope Phase 9 already uses, not a separate one) to the point, floored at `0` (a point
-already inside the envelope reports contact, not negative clearance). A quadrant with no
-qualifying point (nothing within `lidar_range_max_m`, or no valid return at all) defaults to
-`lidar_range_max_m` minus that direction's envelope offset -- "no return" is treated as free space
-out to sensor range, the same convention preprocessing/mapping already use elsewhere for a missing
-return, not a new rule invented here.
+already inside the envelope reports contact, not negative clearance). A qualifying point must be
+`valid`, within `lidar_range_max_m`, **and** at least `min_valid_distance_m` from the sensor --
+the same self-return cutoff preprocessing applies, re-checked here as defense-in-depth so a
+coasting near-origin track (or any stray ~0 m return) cannot force a false `0.00 m` REAR/LEFT/
+RIGHT reading via the floor above. A quadrant with no qualifying point (nothing within
+`lidar_range_max_m`, or no valid return at all) defaults to `lidar_range_max_m` minus that
+direction's envelope offset -- **"no return" is treated as free space out to sensor range, never
+as zero clearance** -- the same convention preprocessing/mapping already use elsewhere for a
+missing return, not a new rule invented here.
 
 **Aggregates**:
 - `min_clearance_m` / `min_direction` -- the smallest of the four directional readings.

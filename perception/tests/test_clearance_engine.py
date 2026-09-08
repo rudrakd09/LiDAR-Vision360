@@ -85,7 +85,8 @@ class TestMinDirectionSelection:
 
 class TestExplainability:
     def test_reason_is_never_empty(self):
-        result = _engine().evaluate(_scan([_point(0.2, 0.0)]))
+        # A real forward return (well outside the min_valid_distance_m self-return radius).
+        result = _engine().evaluate(_scan([_point(2.0, 0.0)]))
         assert len(result.reason) > 0
 
     def test_scan_metadata_is_preserved(self):

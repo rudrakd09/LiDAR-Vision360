@@ -44,11 +44,21 @@ def compute_ttc(
     settings: Settings,
 ) -> float | None:
     """Returns seconds until the vehicle's and object's footprints would touch along the heading
-    axis, assuming constant relative velocity -- `None` if the object is not meaningfully
-    approaching (moving away, or below `collision_minimum_closing_speed_mps`), `0.0` if the
-    footprints already overlap along this axis.
+    axis, assuming constant relative velocity.
+
+    `None` ("not a meaningful TTC") whenever the object is not genuinely approaching -- moving
+    away, stationary, or with a closing speed below `collision_minimum_closing_speed_mps` (the
+    velocity noise floor). This gate is checked FIRST, so a stationary or receding object reports
+    `None` even when its footprint already overlaps the vehicle's: an object that is not closing
+    has no "time to collision", it is a distance/clearance concern, and `risk.assess_risk` still
+    escalates it via its distance rule. `0.0` is reserved for the one case it actually means: an
+    object that IS closing and whose footprint already overlaps along this axis (contact now).
     """
     along, _lateral = rotate_to_heading(relative_position.x, relative_position.y, vehicle_heading_deg)
+
+    speed = closing_speed_along(relative_position, relative_velocity, vehicle_heading_deg)
+    if speed <= settings.collision_minimum_closing_speed_mps:
+        return None  # not meaningfully approaching -- undefined TTC, regardless of proximity
 
     # The vehicle's own contact boundary depends on which side the object is on -- its front
     # envelope if ahead, its rear envelope if behind.
@@ -57,10 +67,6 @@ def compute_ttc(
     remaining_gap = abs(along) - vehicle_contact_gap - object_contact_gap
 
     if remaining_gap <= 0.0:
-        return 0.0  # footprints already overlap along this axis
-
-    speed = closing_speed_along(relative_position, relative_velocity, vehicle_heading_deg)
-    if speed <= settings.collision_minimum_closing_speed_mps:
-        return None  # not meaningfully approaching -- undefined/infinite TTC
+        return 0.0  # closing AND footprints already overlap along this axis -- contact now
 
     return remaining_gap / speed

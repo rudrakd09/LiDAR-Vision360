@@ -1,0 +1,9 @@
+{
+  "id": "low_clearance",
+  "name": "Low clearance -- object beside the corridor",
+  "description": "A short wall running parallel to the vehicle 1.7 m to its left (about 0.5 m outside the left safety envelope). Left directional clearance drops into the LOW_CLEARANCE band, but the wall is outside the projected driving path so it is not an imminent collision -- collision risk stays SAFE while clearance state is LOW_CLEARANCE.",
+  "noise": { "distance_noise_std_m": 0.0, "outlier_probability": 0.0, "missing_probability": 0.0, "seed": 42 },
+  "obstacles": [
+    { "type": "wall", "x1": -1.5, "y1": 1.7, "x2": 1.5, "y2": 1.7 }
+  ]
+}

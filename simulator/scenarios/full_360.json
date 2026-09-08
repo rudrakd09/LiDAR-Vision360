@@ -1,0 +1,12 @@
+{
+  "id": "full_360",
+  "name": "Full 360 -- one object per direction",
+  "description": "Four identical poles 6 m from the sensor, one in each cardinal direction: FRONT (+X), REAR (-X), LEFT (+Y), RIGHT (-Y). Used to verify the coordinate convention (+X front, +Y left, -X rear, -Y right) end to end and that each directional clearance sector reflects the correct pole. All obstacles are far and stationary, so overall risk is SAFE.",
+  "noise": { "distance_noise_std_m": 0.0, "outlier_probability": 0.0, "missing_probability": 0.0, "seed": 42 },
+  "obstacles": [
+    { "type": "pole", "center_x": 6.0, "center_y": 0.0, "radius": 0.3 },
+    { "type": "pole", "center_x": -6.0, "center_y": 0.0, "radius": 0.3 },
+    { "type": "pole", "center_x": 0.0, "center_y": 6.0, "radius": 0.3 },
+    { "type": "pole", "center_x": 0.0, "center_y": -6.0, "radius": 0.3 }
+  ]
+}

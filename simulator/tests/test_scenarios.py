@@ -75,3 +75,32 @@ class TestDeterministicSeeding:
             frame = source.read_scan()
         invalid_count = sum(1 for p in frame.points if not p.valid)
         assert invalid_count > 0
+
+
+# Named risk/clearance/TTC scenarios (selectable as `--scenario <name>`), exercised end-to-end
+# through the full pipeline in tests/test_risk_scenarios.py. Here we only assert they load and
+# produce a valid scan, mirroring TestScenarioExecution above for the numbered set.
+NAMED_RISK_SCENARIOS = [
+    "safe", "caution", "low_clearance", "critical", "static_obstacle",
+    "approaching", "moving_away", "multiple_objects", "track_lost", "full_360",
+]
+
+
+class TestNamedRiskScenarios:
+    @pytest.mark.parametrize("scenario_id", NAMED_RISK_SCENARIOS)
+    def test_named_scenario_present_and_runnable(self, scenario_id):
+        spec = get_scenario(scenario_id)
+        assert spec.id == scenario_id
+        assert spec.name and spec.description
+        source = make_data_source(scenario_id)
+        with source:
+            frame = source.read_scan()
+        assert frame.point_count > 0
+        for p in frame.points:
+            assert 0.0 <= p.angle < 360.0
+            assert p.distance >= 0.0
+
+    def test_named_scenario_ids_do_not_collide_with_numbered_ones(self):
+        all_ids = {s.id for s in list_scenarios()}
+        for sid in NAMED_RISK_SCENARIOS + REQUIRED_SCENARIO_IDS:
+            assert sid in all_ids

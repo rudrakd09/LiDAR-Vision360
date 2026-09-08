@@ -1,0 +1,9 @@
+{
+  "id": "static_obstacle",
+  "name": "Static obstacle -- close but not closing",
+  "description": "A pole 3 m directly ahead, completely stationary. Its footprint already overlaps the vehicle safety envelope, but because it is not approaching (velocity ~0) the TTC must be N/A, never 0.0. Distance-based risk is still reported (WARNING) from the configured thresholds.",
+  "noise": { "distance_noise_std_m": 0.0, "outlier_probability": 0.0, "missing_probability": 0.0, "seed": 42 },
+  "obstacles": [
+    { "type": "pole", "center_x": 3.0, "center_y": 0.0, "radius": 0.3 }
+  ]
+}

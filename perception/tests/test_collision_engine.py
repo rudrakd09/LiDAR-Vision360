@@ -221,6 +221,37 @@ class TestEdgeCases:
         _engine().evaluate(_scan([_object(5.0, 0.0, vx=0.0, vy=0.0)]))  # must not raise
 
 
+# --- Self-return guard -------------------------------------------------------------------------
+
+class TestSelfReturnGuard:
+    """A track whose centroid is within min_valid_distance_m of the sensor (a coasting near-origin
+    track / ego self return) must not drive risk or TTC -- it ages out via the normal lifecycle."""
+
+    def test_near_origin_track_is_never_critical(self):
+        d = DEFAULT_SETTINGS.min_valid_distance_m - 0.1  # ~0.2 m, the live-rig phantom distance
+        result = _engine().evaluate(_scan([_object(d, 0.0, vx=-1.0, track_id="phantom")])).results[0]
+        assert result.risk_level == RiskLevel.SAFE
+        assert result.ttc is None
+        assert result.in_projected_path is False
+        assert result.collision_predicted is False
+        assert any("self-return" in r or "self return" in r for r in result.reason)
+
+    def test_near_origin_track_does_not_raise_overall_risk(self):
+        objects = [
+            _object(0.15, 0.0, vx=-2.0, track_id="phantom"),   # self return, would be CRITICAL without the guard
+            _object(30.0, 0.0, track_id="far"),                 # genuinely safe
+        ]
+        assessment = _engine().evaluate(_scan(objects))
+        assert assessment.overall_risk == RiskLevel.SAFE
+        # still counted -- object_count stays honest, it just isn't dangerous
+        assert len(assessment.results) == 2
+
+    def test_real_object_just_outside_the_radius_is_still_assessed_normally(self):
+        d = DEFAULT_SETTINGS.min_valid_distance_m + 0.5  # 0.8 m -- a real, very close obstacle
+        result = _engine().evaluate(_scan([_object(d, 0.0)])).results[0]
+        assert result.risk_level == RiskLevel.CRITICAL  # genuinely close & in path
+
+
 # --- Explainability ------------------------------------------------------------------------------
 
 class TestExplainability:

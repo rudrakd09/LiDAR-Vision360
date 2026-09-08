@@ -105,7 +105,11 @@ class TestCoordinateConversion:
             wall_scan_lines(obstacle_angles=set(), obstacle_mm=1200, background_mm=1200)
             + b"A:0 , D:1200\n"  # wraps, completing the scan above
         ]
-        source = ESP32SerialSource(settings=settings_for())
+        # This test pins the polar->Cartesian conversion, not the pipeline's filtering. A 1.2 m
+        # ring from a centre-mounted sensor sits inside the ego body, so the ego-footprint mask
+        # (correctly) removes it -- disable that mask here so the conversion itself is what's
+        # under test.
+        source = ESP32SerialSource(settings=settings_for(ego_footprint_filter_enabled=False))
         transformer = CoordinateTransformer()
 
         source.connect()
@@ -114,7 +118,7 @@ class TestCoordinateConversion:
         finally:
             source.disconnect()
 
-        cartesian = transformer.transform(Preprocessor().process(frame))
+        cartesian = transformer.transform(Preprocessor(settings=settings_for(ego_footprint_filter_enabled=False)).process(frame))
         point = next(p for p in cartesian.points if p.angle == pytest.approx(45.0))
 
         # 1200 mm -> 1.2 m; x = 1.2*cos(45deg), y = 1.2*sin(45deg).
@@ -194,6 +198,102 @@ class TestFullPipeline:
         assert live_state.risk is not None
         assert live_state.clearance is not None
         assert live_state.session_id
+
+    def test_near_zero_origin_returns_never_create_a_cluster_or_track(self) -> None:
+        """A ring of returns at (essentially) the sensor origin -- the ego-vehicle / self return
+        -- must be filtered in preprocessing and never reach clustering/classification/tracking.
+
+        The wire values here (D:80 mm) are physically positive, so the ASCII parser accepts them;
+        it is `Settings.min_valid_distance_m` (0.20 m), enforced in preprocessing, that rejects
+        them. `background_mm` is placed in the free-space band (>= range_max - margin) so the
+        ONLY thing that could possibly cluster is the origin ring or the real obstacle.
+        """
+        def scan_bytes() -> bytes:
+            lines = []
+            for angle in range(360):
+                if angle <= 25 or angle >= 335:      # ~50 deg wedge of origin self-returns
+                    d = 80
+                elif 80 <= angle <= 110:             # a genuine obstacle, ~3 m off to the left
+                    d = 3000
+                else:
+                    d = 11900                        # free space / no return
+                lines.append(f"A:{angle} , D:{d}\n")
+            return "".join(lines).encode()
+
+        FakeSerial.script = [scan_bytes() + b"A:0 , D:11900\n"]
+        settings = settings_for()
+        source = ESP32SerialSource(settings=settings)
+
+        source.connect()
+        try:
+            raw = source.read_scan()
+        finally:
+            source.disconnect()
+
+        clean = Preprocessor().process(raw)
+        cartesian = CoordinateTransformer().transform(clean)
+        clustered = DBSCANClusterer().cluster(cartesian)
+        classified = GeometricClassifier().classify(clustered)
+        tracked = ObjectTracker().update(classified)
+
+        # The ~51 origin-wedge points were dropped in preprocessing, not carried downstream.
+        assert raw.point_count == 360
+        assert clean.invalid_count >= 50
+        assert all(p.distance >= settings.min_valid_distance_m for p in clean.points)
+
+        # The real obstacle still clusters and tracks...
+        assert len(clustered.clusters) >= 1
+        assert len(tracked.objects) >= 1
+        # ...and nothing sits at the origin: every object is well clear of the self-return radius.
+        for obj in tracked.objects:
+            centroid_distance = math.hypot(obj.centroid.x, obj.centroid.y)
+            assert centroid_distance > 1.0, f"phantom object at the origin: {obj.classification} @ {centroid_distance:.3f} m"
+
+    def test_a_track_seeded_by_near_zero_points_ages_out_once_filtering_is_active(self) -> None:
+        """Requirement 8: a pre-existing origin track is not pinned forever -- with the invalid
+        points now filtered it simply stops being fed and expires via the normal track lifecycle.
+
+        Scan 1 carries a dense origin blob AND a real obstacle; scans 2+ carry only the real
+        obstacle. Even scan 1 must not yield an origin track (the blob is filtered), and by the
+        last scan the only surviving track is the real obstacle.
+        """
+        def scan_bytes(*, origin_blob: bool) -> bytes:
+            lines = []
+            for angle in range(360):
+                if origin_blob and (angle <= 25 or angle >= 335):
+                    d = 60
+                elif 80 <= angle <= 110:
+                    d = 3000
+                else:
+                    d = 11900
+                lines.append(f"A:{angle} , D:{d}\n")
+            return "".join(lines).encode()
+
+        FakeSerial.script = [scan_bytes(origin_blob=True)] + [scan_bytes(origin_blob=False)] * 6
+        settings = settings_for()
+        source = ESP32SerialSource(settings=settings)
+
+        preprocessor, transformer = Preprocessor(), CoordinateTransformer()
+        clusterer, classifier = DBSCANClusterer(), GeometricClassifier()
+        tracker = ObjectTracker()
+
+        origin_track_seen = False
+        source.connect()
+        try:
+            for _ in range(6):
+                raw = source.read_scan()
+                tracked = tracker.update(
+                    classifier.classify(clusterer.cluster(transformer.transform(preprocessor.process(raw))))
+                )
+                for obj in tracked.objects:
+                    if math.hypot(obj.centroid.x, obj.centroid.y) <= 1.0:
+                        origin_track_seen = True
+        finally:
+            source.disconnect()
+
+        assert not origin_track_seen, "the filtered origin blob must never have produced a track"
+        # A real obstacle is still tracked at the end -- the pipeline stayed healthy throughout.
+        assert any(math.hypot(o.centroid.x, o.centroid.y) > 1.0 for o in tracked.objects)
 
     def test_tracking_keeps_a_stable_id_across_consecutive_scans(self) -> None:
         """The same obstacle across three revolutions must stay ONE track, not three."""

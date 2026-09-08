@@ -41,6 +41,57 @@ class Settings(BaseSettings):
     lidar_num_points: int = 360
     lidar_scan_frequency_hz: float = 10.0
 
+    # Minimum distance (metres) at which a LiDAR return is treated as a real environmental
+    # object rather than an ego-vehicle / sensor-housing "self return" (a measurement at, or
+    # essentially at, the sensor origin). Enforced FIRST, in `preprocessing.validation` -- before
+    # the coordinate transform, clustering, classification, tracking, mapping, clearance, TTC and
+    # risk stages -- and again as defense-in-depth in `clearance.geometry.nearest_in_each_quadrant`
+    # and `collision.engine` (a coasting track whose last-known centroid is inside this radius is
+    # never allowed to drive clearance=0, TTC=0 or CRITICAL). A near-zero return therefore can
+    # never seed a cluster, a track, an object/track count, a classification, a
+    # clearance/collision/TTC/prediction figure, or an event-timeline entry. A dashboard-only hide
+    # would leave all of those still driven by the phantom point, so the rejection is done here in
+    # the pipeline instead.
+    #
+    # Distinct from `lidar_range_min_m` (0.05, the sensor's raw lower measurement bound): this is
+    # the larger "anything closer than this is the vehicle we are mounted on, not the world"
+    # radius. Default 0.30 m: at/above the SLAMTEC RPLIDAR A3M1's own 0.20 m rated minimum range
+    # (see docs/hardware-validation-procedure.md / docs/hardware-integration.md -- below that the
+    # unit cannot range at all), plus headroom for the unreliable near-floor band and the typical
+    # sensor-mount / ego-body self-return a centre-mounted unit sees (observed at ~0.2 m on the
+    # live rig). It is far inside the 0.9 m ego-body half-width (`vehicle_width_m` / 2) and far
+    # below every configured clearance/collision threshold (which are measured from the safety-
+    # envelope edge, >= 1.2 m out, not from the origin), so no *detectable* environmental object
+    # -- one that is necessarily at least a sensor-minimum-range away -- is excluded. Points with a
+    # zero, negative, or non-finite distance are rejected regardless of this value. Override with
+    # LIDAR_MIN_VALID_DISTANCE_M to retune for a different sensor or mount (e.g. lower it for a
+    # bench sensor with no vehicle body around it, raise it for a bulkier mount).
+    min_valid_distance_m: float = 0.3
+
+    # --- Ego-vehicle footprint self-return mask (perception) ---
+    # A LiDAR return whose (x, y) -- from angle+distance via the standard polar->Cartesian
+    # transform -- falls INSIDE the ego vehicle's own body rectangle cannot be a real
+    # environmental object: it is a self return off the vehicle body or the sensor mount. Such
+    # returns are rejected in `preprocessing.validation` (InvalidReason.INSIDE_EGO_FOOTPRINT),
+    # BEFORE clustering / classification / tracking / clearance / TTC / risk / the event timeline,
+    # so the ego vehicle can never appear as a detected object, a track, a "critical object", or
+    # drive a 0.00 m directional clearance. It is also re-checked in `clearance.geometry` and
+    # `collision.engine` as defense-in-depth for a track that was created before the mask existed.
+    #
+    # This is a GEOMETRIC test against the real, configured vehicle shape -- NOT a spherical
+    # distance threshold (that is `min_valid_distance_m`, which stays a small pure-invalid guard).
+    # The rectangle is `vehicle_length_m` x `vehicle_width_m`, centred at the vehicle body origin,
+    # which sits at (-lidar_mount_x_m, -lidar_mount_y_m) in the sensor frame perception works in
+    # (sensor 0deg = +x). So on a bumper-mounted rig (lidar_mount_x_m > 0) the body sits BEHIND
+    # the sensor and a genuine obstacle 0.5 m AHEAD is outside the rectangle and is kept -- the
+    # mask does not remove legitimate close objects, it removes the vehicle you are bolted to.
+    # See `common.geometry.EgoFootprint` and docs/preprocessing.md "Ego-vehicle footprint mask".
+    ego_footprint_filter_enabled: bool = True
+    # Inflates the body rectangle for sensor-position slop and body protrusions (mirrors, bumper,
+    # antenna). Small on purpose: too large and it would start eating an obstacle grazing the
+    # bumper. 0 disables the inflation (the bare body rectangle is still masked).
+    ego_footprint_margin_m: float = 0.05
+
     # --- LiDAR angular sampling and noise (Phase 2, simulator/) ---
     # `lidar_num_points` above remains the knob used by the minimal foundation
     # placeholder (perception.datasources.simulated). The full simulator instead derives its

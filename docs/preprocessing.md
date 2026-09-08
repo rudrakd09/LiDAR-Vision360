@@ -70,8 +70,19 @@ order:
    simulated "missing measurement" dropout) -- reported as `SENSOR_FLAGGED_INVALID`.
 2. `angle` is not finite (NaN/inf) -- `NON_FINITE_ANGLE`.
 3. `distance` is not finite (NaN/inf) -- `NON_FINITE_DISTANCE`.
-4. `distance < min_range_m` -- `BELOW_MIN_RANGE`.
-5. `distance > max_range_m` -- `ABOVE_MAX_RANGE`.
+4. `distance <= 0`, or `distance < min_valid_distance_m` -- `BELOW_MIN_VALID_DISTANCE`. The
+   near-field **radial** self-return cutoff: a return at (essentially) the sensor origin, plus
+   any zero / negative distance regardless of the configured value.
+5. The return's `(x, y)` (`x = d*cos(angle)`, `y = d*sin(angle)`) is inside the **ego vehicle
+   body rectangle** -- `INSIDE_EGO_FOOTPRINT`. The *geometric* self-return guard: a return
+   landing inside the vehicle you are bolted to is a reflection off the body or the sensor mount,
+   never a real obstacle. This is what removes a self-return **arc** -- an arc of body points a
+   few tens of centimetres out that the radial rule in (4) misses (each point's own distance is
+   past the cutoff, but together they form a cluster whose centroid hugs the origin, which then
+   becomes a phantom `#track-1` "vehicle" driving CRITICAL risk and `0.00 m` REAR/LEFT clearance).
+   See "Ego-vehicle footprint mask" below.
+6. `distance < min_range_m` -- `BELOW_MIN_RANGE`.
+7. `distance > max_range_m` -- `ABOVE_MAX_RANGE`.
 
 Otherwise the point is valid. Any unexpected exception while classifying a single point (e.g. a
 genuinely malformed/corrupted value) is caught and the point is treated as invalid
@@ -90,6 +101,72 @@ directly in `perception/tests/test_preprocessing_validation.py` to exercise this
 `min_range_m`/`max_range_m` are **not** separate preprocessing parameters -- validation reuses
 `common.config.Settings.lidar_range_min_m` / `.lidar_range_max_m`, the same values the simulator
 uses to generate scans (Phase 2). There is exactly one configured sensor range in the system.
+
+## Near-field / self-return filtering
+
+`Settings.min_valid_distance_m` (env `LIDAR_MIN_VALID_DISTANCE_M`, default **0.30 m**) is the
+minimum distance at which a return counts as a real environmental object. It is a **separate,
+larger** threshold than `lidar_range_min_m` (0.05 m): `lidar_range_min_m` is the sensor's raw
+lower measurement bound, whereas `min_valid_distance_m` answers "is this the world, or the
+vehicle we are bolted to?". Anything closer -- including a zero, negative, or non-finite
+distance, regardless of the configured value -- is rejected as `BELOW_MIN_VALID_DISTANCE` and
+never reaches the coordinate transform, so it cannot contribute to a cluster, an object or track
+count, a classification, a clearance/collision/TTC/prediction figure, or an event-timeline
+entry. A track that was already created from such points simply stops being fed and ages out
+through the normal tracking lifecycle (`tracking_max_missed_scans` / `tracking_track_timeout_s`);
+while it coasts, `clearance.geometry` and `collision.engine` apply the same radial cutoff again
+as defense-in-depth so it cannot drive a `0.00 m` clearance, a `0.0 s` TTC, or a CRITICAL risk
+from its stale near-origin centroid.
+
+This radial cutoff is a per-point check: it does **not** catch a self-return *arc* whose
+individual points sit a few tens of centimetres out. The **ego-vehicle footprint mask** below is
+what does.
+
+The default sits at/above the **SLAMTEC RPLIDAR A3M1**'s own 0.20 m rated minimum range
+(docs/hardware-validation-procedure.md -- below that the unit cannot range at all), with headroom
+for the unreliable near-floor band and the ~0.2 m sensor-mount / ego-body self return a
+centre-mounted unit sees on the live rig. It is deliberately *far inside* the ego vehicle's own
+0.9 m half-width (`vehicle_width_m` / 2) and far below every configured clearance/collision
+threshold (all measured from the safety-envelope edge, >= 1.2 m from the origin), so no
+*detectable* environmental object -- which is necessarily at least a sensor-minimum-range away --
+is discarded. Retune via `LIDAR_MIN_VALID_DISTANCE_M` for a different sensor or mount (lower for a
+bench unit with no vehicle body around it, higher for a bulkier mount).
+
+The classic repro: a moving simulator obstacle (e.g. `08_approaching_obstacle`) whose leading
+edge sweeps across the sensor origin makes `Environment.true_distance` return ~0 for a whole
+ring of bearings; the simulator's noise model clamps each up to `lidar_range_min_m` (0.05 m),
+which passes the `< min_range_m` test, so the ring used to cluster into a phantom `VEHICLE_LIKE`
+track sitting at map centre. `min_valid_distance_m` rejects that ring outright.
+
+## Ego-vehicle footprint mask
+
+`common.geometry.EgoFootprint` (env `LIDAR_EGO_FOOTPRINT_FILTER_ENABLED`, default **on**) rejects
+any return whose Cartesian `(x, y)` falls inside the ego vehicle's own body rectangle as
+`INSIDE_EGO_FOOTPRINT`. It is built **entirely from existing config**: a
+`vehicle_length_m` x `vehicle_width_m` rectangle, centred at the vehicle body origin, which sits
+at `(-lidar_mount_x_m, -lidar_mount_y_m)` in the sensor frame the perception pipeline works in
+(`0deg` = `+x` forward), optionally yawed by `lidar_mount_orientation_deg`, and inflated by
+`ego_footprint_margin_m` (default 0.05 m) for sensor-position slop and body protrusions.
+
+Why this and not a bigger `min_valid_distance_m`: the live ESP32 rig's self return is an **arc**
+of body/mount reflections roughly 0.3-0.5 m out. Each point's *own* distance clears the radial
+`min_valid_distance_m` cutoff, but the arc DBSCAN-clusters into one blob whose centroid hugs the
+origin -- reported as `#track-1`, `vehicle_like`, ~0.4 m, driving `RISK: CRITICAL` and
+`REAR/LEFT clearance: 0.00 m`. A distance threshold big enough to swallow the whole arc (0.5 m+)
+would start deleting genuinely close obstacles and is exactly what "do not blindly increase
+`MIN_VALID_DISTANCE_M`" warns against. The footprint mask is **geometric**, not radial: it
+removes the vehicle you are bolted to and nothing else. On a bumper-mounted rig
+(`lidar_mount_x_m > 0`) the body sits *behind* the sensor, so a real obstacle 0.5 m dead ahead is
+outside the rectangle and is kept.
+
+A cleared arc leaves no points near the origin -> no cluster -> no `#track-1` -> honest object /
+track count, `SAFE` risk when there is no real hazard, and REAR/LEFT clearance that reads
+clear-to-range instead of `0.00 m`. `preprocessing.Preprocessor.process` emits a one-line
+`[EGO_MASK]` DEBUG log per scan with the rejected count, so "the sensor is seeing the car" is
+visible at a glance rather than leaking downstream.
+
+Disable it (`LIDAR_EGO_FOOTPRINT_FILTER_ENABLED=false`) only for a bench sensor with no vehicle
+around it. The radial `min_valid_distance_m` guard still runs independently either way.
 
 ## Outlier detection algorithm
 
@@ -176,8 +253,11 @@ environment variables, all with sensible defaults:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `lidar_range_min_m` | `0.05` | Reused from Phase 2. Below this, a measurement is invalid. |
+| `lidar_range_min_m` | `0.05` | Reused from Phase 2. Below this, a measurement is invalid (`BELOW_MIN_RANGE`). |
 | `lidar_range_max_m` | `12.0` | Reused from Phase 2. Above this, a measurement is invalid. |
+| `min_valid_distance_m` | `0.30` | Near-field **radial** self-return cutoff. A distance `<= 0`, non-finite, or below this is rejected as `BELOW_MIN_VALID_DISTANCE` before clustering/tracking (and re-checked in clearance/collision). See "Near-field / self-return filtering". |
+| `ego_footprint_filter_enabled` | `True` | Reject returns whose `(x, y)` is inside the ego vehicle body rectangle (`INSIDE_EGO_FOOTPRINT`) -- the **geometric** self-return guard that removes a self-return arc. See "Ego-vehicle footprint mask". |
+| `ego_footprint_margin_m` | `0.05` | Inflates the ego body rectangle by this much (metres) for sensor-position slop / body protrusions. |
 | `preprocessing_outlier_threshold_m` | `0.5` | Max allowed deviation (meters) from a point's local median before it's flagged as an outlier. |
 | `preprocessing_outlier_window_size` | `5` | Approx. number of angular neighbors (incl. self) compared against. `<3` disables outlier detection. |
 | `preprocessing_median_filter_window` | `5` | Approx. number of angular neighbors (incl. self) averaged via median. `<=1` disables noise filtering. |

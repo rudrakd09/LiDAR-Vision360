@@ -1,0 +1,20 @@
+{
+  "id": "multiple_objects",
+  "name": "Multiple objects -- independent tracks",
+  "description": "Four well-separated obstacles: a vehicle-sized box 7 m ahead closing fast at 3.0 m/s (dangerous finite TTC -> CRITICAL), a pole 6 m to the left, a pole 8 m behind, and a wall 5 m to the right. Each becomes its own cluster/track; overall risk is driven by the single most dangerous one (the approaching box), while the others assess individually SAFE.",
+  "noise": { "distance_noise_std_m": 0.0, "outlier_probability": 0.0, "missing_probability": 0.0, "seed": 42 },
+  "obstacles": [
+    {
+      "type": "rectangle",
+      "center_x": 7.0,
+      "center_y": 0.0,
+      "width": 1.8,
+      "depth": 1.5,
+      "tag": "vehicle_like",
+      "moving": { "velocity_mps": 3.0, "direction_deg": 180.0 }
+    },
+    { "type": "pole", "center_x": 0.0, "center_y": 6.0, "radius": 0.3 },
+    { "type": "pole", "center_x": -8.0, "center_y": 0.0, "radius": 0.3 },
+    { "type": "wall", "x1": -3.0, "y1": -5.0, "x2": 3.0, "y2": -5.0 }
+  ]
+}
